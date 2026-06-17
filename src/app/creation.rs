@@ -212,6 +212,10 @@ impl App {
         self.state.terminals.insert(terminal.id.clone(), terminal);
         self.state.workspaces.push(ws);
         let idx = self.state.workspaces.len() - 1;
+        // Derive the ticket from the new workspace's branch/worktree immediately;
+        // git refresh only recomputes on a branch *change*, so a freshly created
+        // workspace would otherwise show no ticket until the branch changes.
+        self.state.workspaces[idx].recompute_ticket();
         self.state
             .remove_alias_shadowed_by_new_pane(self.state.workspaces[idx].tabs[0].root_pane);
         let workspace_id = self.state.workspaces[idx].id.clone();
