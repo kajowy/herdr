@@ -155,6 +155,8 @@ pub struct Workspace {
     pub(crate) cached_ticket: Option<String>,
     /// PR number reported by the agent/hook for this workspace's branch.
     pub(crate) pr_number: Option<u32>,
+    /// Set when the reported PR has been merged.
+    pub(crate) pr_merged: bool,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
@@ -187,7 +189,7 @@ impl DerefMut for Workspace {
     }
 }
 
-fn compose_display_name(label: &str, ticket: Option<String>, pr: Option<u32>) -> String {
+fn compose_display_name(label: &str, ticket: Option<String>, pr: Option<u32>, merged: bool) -> String {
     let mut s = label.to_string();
     if let Some(t) = ticket {
         s.push_str(" - ");
@@ -196,6 +198,9 @@ fn compose_display_name(label: &str, ticket: Option<String>, pr: Option<u32>) ->
     if let Some(p) = pr {
         s.push_str(" #");
         s.push_str(&p.to_string());
+        if merged {
+            s.push_str(" ✓");
+        }
     }
     s
 }
@@ -230,6 +235,9 @@ impl Workspace {
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
+            cached_ticket: None,
+            pr_number: None,
+            pr_merged: false,
             cached_git_ahead_behind: None,
             cached_git_space: git_space_metadata(&identity_cwd),
             worktree_space: None,
@@ -413,6 +421,7 @@ impl Workspace {
                 cached_git_branch: git_branch(&initial_cwd),
                 cached_ticket: None,
                 pr_number: None,
+                pr_merged: false,
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
                 worktree_space: None,
@@ -1072,7 +1081,7 @@ impl Workspace {
             .resolved_identity_cwd()
             .map(|cwd| derive_label_from_cwd(&cwd))
             .unwrap_or_else(|| "workspace".into());
-        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number)
+        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number, self.pr_merged)
     }
 
     pub fn display_name_from(
@@ -1087,7 +1096,7 @@ impl Workspace {
             .resolved_identity_cwd_from(terminals, terminal_runtimes)
             .map(|cwd| derive_label_from_cwd(&cwd))
             .unwrap_or_else(|| "workspace".into());
-        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number)
+        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number, self.pr_merged)
     }
 
     pub fn branch(&self) -> Option<String> {
@@ -1238,6 +1247,7 @@ impl Workspace {
             cached_git_branch: git_branch(&identity_cwd),
             cached_ticket: None,
             pr_number: None,
+            pr_merged: false,
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
@@ -1499,7 +1509,7 @@ mod tests {
     use super::*;
 
     fn composed(label: &str, ticket: Option<&str>, pr: Option<u32>) -> String {
-        compose_display_name(label, ticket.map(str::to_string), pr)
+        compose_display_name(label, ticket.map(str::to_string), pr, false)
     }
 
     #[test]
@@ -1517,6 +1527,13 @@ mod tests {
     #[test]
     fn compose_space_pr_no_ticket() {
         assert_eq!(composed("ta-core", None, Some(301)), "ta-core #301");
+    }
+    #[test]
+    fn compose_marks_merged() {
+        assert_eq!(
+            compose_display_name("ta-core", Some("TA-264".into()), Some(301), true),
+            "ta-core - TA-264 #301 ✓"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=6
+# HERDR_INTEGRATION_VERSION=7
 
 set -eu
 
@@ -101,7 +101,9 @@ except Exception:
 PY
 
 if command -v gh >/dev/null 2>&1; then
-  pr_number="$(gh pr view --json number --jq .number 2>/dev/null || true)"
+  pr_json="$(gh pr view --json number,state --jq '{number:.number,state:.state}' 2>/dev/null || true)"
+  pr_number="$(printf '%s' "$pr_json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["number"])' 2>/dev/null || true)"
+  pr_state="$(printf '%s' "$pr_json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["state"])' 2>/dev/null || true)"
   ws_id="$(herdr pane list 2>/dev/null | HERDR_PANE_ID="$HERDR_PANE_ID" python3 -c 'import sys, json, os
 pid = os.environ.get("HERDR_PANE_ID")
 try:
@@ -111,7 +113,11 @@ except Exception:
     pass' 2>/dev/null || true)"
   if [ -n "$ws_id" ]; then
     if [ -n "$pr_number" ]; then
-      herdr workspace report-pr "$ws_id" --pr "$pr_number" >/dev/null 2>&1 || true
+      if [ "$pr_state" = "MERGED" ]; then
+        herdr workspace report-pr "$ws_id" --pr "$pr_number" --merged >/dev/null 2>&1 || true
+      else
+        herdr workspace report-pr "$ws_id" --pr "$pr_number" >/dev/null 2>&1 || true
+      fi
     else
       herdr workspace report-pr "$ws_id" --clear-pr >/dev/null 2>&1 || true
     fi

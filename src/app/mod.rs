@@ -627,6 +627,7 @@ impl App {
             sound: config.ui.sound.clone(),
             local_sound_playback: true,
             toast_config: config.ui.toast.clone(),
+            on_pr_merge: config.ui.on_pr_merge,
             keybinds: config.keybinds(),
             spinner_tick: 0,
             palette: theme_palette,
@@ -1393,6 +1394,7 @@ impl App {
                 }
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
+                self.state.on_pr_merge = config.ui.on_pr_merge;
             }
         }
 

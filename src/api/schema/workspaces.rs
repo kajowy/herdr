@@ -35,6 +35,8 @@ pub struct WorkspaceReportPrParams {
     pub pr: Option<u32>,
     #[serde(default)]
     pub clear_pr: bool,
+    #[serde(default)]
+    pub merged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

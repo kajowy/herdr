@@ -159,6 +159,7 @@ fn workspace_report_pr(args: &[String]) -> std::io::Result<i32> {
     let workspace_id = super::normalize_workspace_id(raw_workspace_id);
     let mut pr = None;
     let mut clear_pr = false;
+    let mut merged = false;
 
     let mut index = 1;
     while index < args.len() {
@@ -179,6 +180,10 @@ fn workspace_report_pr(args: &[String]) -> std::io::Result<i32> {
                 clear_pr = true;
                 index += 1;
             }
+            "--merged" => {
+                merged = true;
+                index += 1;
+            }
             other => {
                 eprintln!("unknown option: {other}");
                 return Ok(2);
@@ -190,6 +195,7 @@ fn workspace_report_pr(args: &[String]) -> std::io::Result<i32> {
         workspace_id,
         pr,
         clear_pr,
+        merged,
     })
 }
 

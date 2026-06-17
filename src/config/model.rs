@@ -88,6 +88,15 @@ pub enum ToastClipboardPosition {
     BottomRight,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnPrMergeConfig {
+    #[default]
+    Mark,
+    CloseIfClean,
+    CloseAlways,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentPanelSortConfig {
@@ -815,6 +824,8 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+    /// Policy applied when a workspace PR is reported as merged. Default: "mark".
+    pub on_pr_merge: OnPrMergeConfig,
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -1003,6 +1014,7 @@ impl Default for UiConfig {
             accent: "cyan".into(),
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
+            on_pr_merge: OnPrMergeConfig::default(),
         }
     }
 }
@@ -1383,6 +1395,13 @@ sidebar_collapsed_mode = "hidden"
         assert_eq!(validated_sidebar_bounds(0, u16::MAX), Some((0, u16::MAX)));
         assert_eq!(validated_sidebar_bounds(50, 30), None);
         assert_eq!(validated_sidebar_bounds(u16::MAX, 0), None);
+    }
+
+    #[test]
+    fn on_pr_merge_defaults_to_mark_and_parses() {
+        assert_eq!(Config::default().ui.on_pr_merge, OnPrMergeConfig::Mark);
+        let cfg: Config = toml::from_str("[ui]\non_pr_merge = \"close-if-clean\"\n").unwrap();
+        assert_eq!(cfg.ui.on_pr_merge, OnPrMergeConfig::CloseIfClean);
     }
 
     #[test]
