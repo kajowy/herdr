@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCreateParams,
-    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
+    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceReportPrParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -151,6 +151,22 @@ impl App {
         }
 
         encode_success(id, ResponseResult::WorkspaceList { workspaces })
+    }
+
+    pub(super) fn handle_workspace_report_pr(
+        &mut self,
+        id: String,
+        params: WorkspaceReportPrParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let Some(ws) = self.state.workspaces.get_mut(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        ws.pr_number = if params.clear_pr { None } else { params.pr };
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_workspace_close(&mut self, id: String, target: WorkspaceTarget) -> String {
@@ -311,6 +327,40 @@ mod tests {
             is_linked_worktree: true,
         });
         app
+    }
+
+    #[test]
+    fn report_pr_sets_and_clears_pr_number() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("myws")];
+        let id = app.state.workspaces[0].id.clone();
+
+        app.handle_workspace_report_pr(
+            "req".into(),
+            WorkspaceReportPrParams {
+                workspace_id: id.clone(),
+                pr: Some(301),
+                clear_pr: false,
+            },
+        );
+        assert_eq!(app.state.workspaces[0].pr_number, Some(301));
+
+        app.handle_workspace_report_pr(
+            "req2".into(),
+            WorkspaceReportPrParams {
+                workspace_id: id.clone(),
+                pr: None,
+                clear_pr: true,
+            },
+        );
+        assert_eq!(app.state.workspaces[0].pr_number, None);
     }
 
     #[test]

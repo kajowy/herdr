@@ -911,6 +911,9 @@ impl App {
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
             }
+            Method::WorkspaceReportPr(params) => {
+                return self.handle_workspace_report_pr(request.id, params);
+            }
             Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
             Method::WorktreeCreate(params) => {
                 let _ = params;

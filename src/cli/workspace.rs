@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{WorkspaceCreateParams, WorkspaceRenameParams};
+use crate::api::schema::{WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportPrParams};
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -15,6 +15,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => workspace_focus(&args[1..]),
         "rename" => workspace_rename(&args[1..]),
         "close" => workspace_close(&args[1..]),
+        "report-pr" => workspace_report_pr(&args[1..]),
         "help" | "--help" | "-h" => {
             print_workspace_help();
             Ok(0)
@@ -149,6 +150,49 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     super::runtime::workspace_close(super::normalize_workspace_id(raw_workspace_id))
 }
 
+fn workspace_report_pr(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_workspace_id) = args.first() else {
+        eprintln!("usage: herdr workspace report-pr <workspace_id> --pr <number> | --clear-pr");
+        return Ok(2);
+    };
+
+    let workspace_id = super::normalize_workspace_id(raw_workspace_id);
+    let mut pr = None;
+    let mut clear_pr = false;
+
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pr" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --pr");
+                    return Ok(2);
+                };
+                let Ok(n) = value.parse::<u32>() else {
+                    eprintln!("--pr must be a positive integer");
+                    return Ok(2);
+                };
+                pr = Some(n);
+                index += 2;
+            }
+            "--clear-pr" => {
+                clear_pr = true;
+                index += 1;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+
+    super::runtime::workspace_report_pr(WorkspaceReportPrParams {
+        workspace_id,
+        pr,
+        clear_pr,
+    })
+}
+
 fn print_workspace_help() {
     eprintln!("herdr workspace commands:");
     eprintln!("  herdr workspace list");
@@ -157,4 +201,5 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
     eprintln!("  herdr workspace close <workspace_id>");
+    eprintln!("  herdr workspace report-pr <workspace_id> --pr <number> | --clear-pr");
 }
