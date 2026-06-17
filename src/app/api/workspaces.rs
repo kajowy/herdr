@@ -172,7 +172,7 @@ impl App {
             ws.pr_number = params.pr;
             ws.pr_merged = params.merged;
         }
-        if params.merged {
+        if params.merged && !params.clear_pr {
             let policy = self.state.on_pr_merge;
             match policy {
                 OnPrMergeConfig::Mark => {}

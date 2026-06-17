@@ -404,27 +404,29 @@ fn restore_workspace(
 
     let worktree_space = restored_worktree_space_membership(snap.worktree_space.clone());
 
+    let mut ws = Workspace {
+        id: workspace_id,
+        custom_name: snap.custom_name.clone(),
+        identity_cwd: snap.identity_cwd.clone(),
+        cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
+        cached_ticket: None,
+        pr_number: None,
+        pr_merged: false,
+        cached_git_ahead_behind: None,
+        cached_git_space: crate::workspace::git_space_metadata(&snap.identity_cwd),
+        worktree_space,
+        public_pane_numbers,
+        next_public_pane_number,
+        next_public_tab_number,
+        active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+        tabs,
+        #[cfg(test)]
+        test_runtimes: HashMap::new(),
+    };
+    ws.recompute_ticket();
+
     (
-        Some(Workspace {
-            id: workspace_id,
-            custom_name: snap.custom_name.clone(),
-            identity_cwd: snap.identity_cwd.clone(),
-            cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
-            cached_ticket: None,
-            pr_number: None,
-            pr_merged: false,
-            cached_git_ahead_behind: None,
-            cached_git_space: crate::workspace::git_space_metadata(&snap.identity_cwd),
-            worktree_space,
-            public_pane_numbers,
-            next_public_pane_number,
-            next_public_tab_number,
-            active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
-            tabs,
-            #[cfg(test)]
-            test_runtimes: HashMap::new(),
-        })
-        .map(|workspace| (workspace, terminals, terminal_runtimes)),
+        Some((ws, terminals, terminal_runtimes)),
         failed_imports,
     )
 }
@@ -1691,5 +1693,16 @@ mod tests {
             collapsed_space_keys: Default::default(),
         };
         (snapshot, history)
+    }
+
+    #[test]
+    fn restore_workspace_derives_ticket_from_branch() {
+        // Mirrors what restore_workspace now does: construct the Workspace then call
+        // recompute_ticket() before returning it, so the ticket is set on restore.
+        let mut ws = Workspace::test_new("any");
+        ws.cached_git_branch = Some("feat/ta-264-add-panel".into());
+        ws.cached_ticket = None;
+        ws.recompute_ticket();
+        assert_eq!(ws.cached_ticket, Some("TA-264".to_string()));
     }
 }

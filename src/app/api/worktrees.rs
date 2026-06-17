@@ -457,6 +457,7 @@ impl App {
                 false
             } else {
                 workspace.worktree_space = Some(membership);
+                workspace.recompute_ticket();
                 true
             }
         } else {
