@@ -1429,6 +1429,38 @@ impl Workspace {
     }
 }
 
+/// Derive an upper-cased ticket id like `TA-264` from a worktree name or branch.
+/// Worktree name takes priority. Returns None when no `letters-digits` token is found.
+fn derive_ticket(worktree_name: Option<&str>, branch: Option<&str>) -> Option<String> {
+    fn scan(s: &str) -> Option<String> {
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            let letters = i - start;
+            if letters >= 2 && i < bytes.len() && bytes[i] == b'-' {
+                let dash = i;
+                i += 1;
+                let dstart = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > dstart {
+                    return Some(format!("{}-{}", s[start..dash].to_ascii_uppercase(), &s[dstart..i]));
+                }
+            }
+            if i == start {
+                i += 1;
+            }
+        }
+        None
+    }
+    worktree_name.and_then(scan).or_else(|| branch.and_then(scan))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1581,6 +1613,31 @@ mod tests {
             ws.resolved_identity_cwd_from(&terminals, &terminal_runtimes),
             Some(PathBuf::from("/herdr-test/pion"))
         );
+    }
+
+    #[test]
+    fn derive_ticket_from_worktree_name() {
+        assert_eq!(derive_ticket(Some("ta-264-communities-spec"), None), Some("TA-264".to_string()));
+    }
+
+    #[test]
+    fn derive_ticket_from_branch_when_no_worktree() {
+        assert_eq!(derive_ticket(None, Some("feature/ta-312-foo")), Some("TA-312".to_string()));
+    }
+
+    #[test]
+    fn derive_ticket_prefers_worktree_over_branch() {
+        assert_eq!(derive_ticket(Some("ta-264-x"), Some("feature/ta-999-y")), Some("TA-264".to_string()));
+    }
+
+    #[test]
+    fn derive_ticket_none_when_no_match() {
+        assert_eq!(derive_ticket(Some("main"), Some("main")), None);
+    }
+
+    #[test]
+    fn derive_ticket_uppercases() {
+        assert_eq!(derive_ticket(None, Some("abc-7")), Some("ABC-7".to_string()));
     }
 
     #[test]
