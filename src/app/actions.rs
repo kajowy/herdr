@@ -2459,6 +2459,7 @@ impl AppState {
             let ws = &mut self.workspaces[ws_idx];
             if ws.cached_git_branch != result.branch {
                 ws.cached_git_branch = result.branch;
+                ws.recompute_ticket();
                 changed = true;
             }
             if ws.cached_git_ahead_behind != result.ahead_behind {

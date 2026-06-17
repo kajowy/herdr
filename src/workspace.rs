@@ -1106,6 +1106,16 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
+    pub(crate) fn recompute_ticket(&mut self) {
+        let worktree = self
+            .worktree_space
+            .as_ref()
+            .and_then(|m| m.checkout_path.file_name())
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        self.cached_ticket = derive_ticket(worktree.as_deref(), self.cached_git_branch.as_deref());
+    }
+
     #[cfg(test)]
     pub fn refresh_git_ahead_behind(&mut self) {
         let cwd = self.resolved_identity_cwd();
@@ -1682,6 +1692,14 @@ mod tests {
     #[test]
     fn derive_ticket_uppercases() {
         assert_eq!(derive_ticket(None, Some("abc-7")), Some("ABC-7".to_string()));
+    }
+
+    #[test]
+    fn recompute_ticket_from_branch() {
+        let mut ws = Workspace::test_new("ignored");
+        ws.cached_git_branch = Some("feature/ta-7-x".into());
+        ws.recompute_ticket();
+        assert_eq!(ws.cached_ticket, Some("TA-7".to_string()));
     }
 
     #[test]
