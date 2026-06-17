@@ -151,6 +151,10 @@ pub struct Workspace {
     pub identity_cwd: PathBuf,
     /// Cached current git branch for the workspace repo.
     pub(crate) cached_git_branch: Option<String>,
+    /// Cached ticket id (e.g. `TA-264`) derived from branch/worktree during git refresh.
+    pub(crate) cached_ticket: Option<String>,
+    /// PR number reported by the agent/hook for this workspace's branch.
+    pub(crate) pr_number: Option<u32>,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
@@ -181,6 +185,19 @@ impl DerefMut for Workspace {
         self.active_tab_mut()
             .expect("workspace must always have at least one active tab")
     }
+}
+
+fn compose_display_name(label: &str, ticket: Option<String>, pr: Option<u32>) -> String {
+    let mut s = label.to_string();
+    if let Some(t) = ticket {
+        s.push_str(" - ");
+        s.push_str(&t);
+    }
+    if let Some(p) = pr {
+        s.push_str(" #");
+        s.push_str(&p.to_string());
+    }
+    s
 }
 
 impl Workspace {
@@ -394,6 +411,8 @@ impl Workspace {
                 custom_name: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_git_branch: git_branch(&initial_cwd),
+                cached_ticket: None,
+                pr_number: None,
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
                 worktree_space: None,
@@ -1049,10 +1068,11 @@ impl Workspace {
         if let Some(name) = &self.custom_name {
             return name.clone();
         }
-
-        self.resolved_identity_cwd()
+        let label = self
+            .resolved_identity_cwd()
             .map(|cwd| derive_label_from_cwd(&cwd))
-            .unwrap_or_else(|| "workspace".into())
+            .unwrap_or_else(|| "workspace".into());
+        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number)
     }
 
     pub fn display_name_from(
@@ -1063,10 +1083,11 @@ impl Workspace {
         if let Some(name) = &self.custom_name {
             return name.clone();
         }
-
-        self.resolved_identity_cwd_from(terminals, terminal_runtimes)
+        let label = self
+            .resolved_identity_cwd_from(terminals, terminal_runtimes)
             .map(|cwd| derive_label_from_cwd(&cwd))
-            .unwrap_or_else(|| "workspace".into())
+            .unwrap_or_else(|| "workspace".into());
+        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number)
     }
 
     pub fn branch(&self) -> Option<String> {
@@ -1205,6 +1226,8 @@ impl Workspace {
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
+            cached_ticket: None,
+            pr_number: None,
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
@@ -1464,6 +1487,27 @@ fn derive_ticket(worktree_name: Option<&str>, branch: Option<&str>) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn composed(label: &str, ticket: Option<&str>, pr: Option<u32>) -> String {
+        compose_display_name(label, ticket.map(str::to_string), pr)
+    }
+
+    #[test]
+    fn compose_space_only() {
+        assert_eq!(composed("ta-core", None, None), "ta-core");
+    }
+    #[test]
+    fn compose_space_ticket() {
+        assert_eq!(composed("ta-core", Some("TA-264"), None), "ta-core - TA-264");
+    }
+    #[test]
+    fn compose_space_ticket_pr() {
+        assert_eq!(composed("ta-core", Some("TA-264"), Some(301)), "ta-core - TA-264 #301");
+    }
+    #[test]
+    fn compose_space_pr_no_ticket() {
+        assert_eq!(composed("ta-core", None, Some(301)), "ta-core #301");
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {
