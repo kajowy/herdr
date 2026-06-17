@@ -182,24 +182,11 @@ impl App {
                     self.shutdown_detached_terminal_runtimes();
                 }
                 OnPrMergeConfig::CloseIfClean => {
-                    let pane_is_safe = self
-                        .state
-                        .workspaces
-                        .get(index)
-                        .and_then(|ws| ws.focused_pane_id())
-                        .and_then(|pane_id| self.state.terminal_id_for_pane(index, pane_id))
-                        .and_then(|tid| self.state.terminals.get(&tid))
-                        .is_some_and(|t| {
-                            matches!(
-                                t.state,
-                                crate::detect::AgentState::Idle | crate::detect::AgentState::Unknown
-                            )
-                        });
-                    if pane_is_safe {
-                        self.state.selected = index;
-                        self.state.close_selected_workspace();
-                        self.shutdown_detached_terminal_runtimes();
-                    }
+                    // Conservative: herdr has no cached "uncommitted changes" flag yet, so we
+                    // cannot verify the working tree is clean without shelling out (forbidden).
+                    // Until a `has_uncommitted_changes` flag is cached during the git-refresh
+                    // cycle, close-if-clean must NOT close a pane — doing so risks discarding
+                    // unsaved work. It falls back to mark-only (the merged marker is already set).
                 }
             }
         }
@@ -455,6 +442,33 @@ mod tests {
             },
         );
         assert!(app.state.workspaces.is_empty(), "CloseAlways policy must close workspace");
+    }
+
+    #[test]
+    fn close_if_clean_does_not_close_pane() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.on_pr_merge = OnPrMergeConfig::CloseIfClean;
+        app.state.workspaces = vec![Workspace::test_new("myws")];
+        let id = app.state.workspaces[0].id.clone();
+
+        app.handle_workspace_report_pr(
+            "req".into(),
+            WorkspaceReportPrParams {
+                workspace_id: id.clone(),
+                pr: Some(301),
+                clear_pr: false,
+                merged: true,
+            },
+        );
+        assert!(app.state.workspaces[0].pr_merged, "merged marker must be set");
+        assert_eq!(app.state.workspaces.len(), 1, "CloseIfClean must not close the workspace");
     }
 
     #[test]
