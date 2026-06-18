@@ -29,9 +29,7 @@ fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
 }
 
 fn tab_chrome_label(ws: &crate::workspace::Workspace, tab_idx: usize) -> String {
-    let name = ws
-        .tab_display_name(tab_idx)
-        .unwrap_or_else(|| (tab_idx + 1).to_string());
+    let name = ws.effective_tab_label(tab_idx);
     if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
         format!("{name} Z")
     } else {
@@ -321,12 +319,19 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             continue;
         }
         let active = idx == ws.active_tab;
+        let name = ws.effective_tab_label(idx);
+        let has_meaningful_name = tab.custom_name.is_some()
+            || (active
+                && name
+                    != ws
+                        .tab_display_name(idx)
+                        .unwrap_or_else(|| (idx + 1).to_string()));
         let style = if active {
             let base = Style::default().fg(panel_contrast_fg(p)).bg(p.accent);
-            if tab.is_auto_named() {
-                base
-            } else {
+            if has_meaningful_name {
                 base.add_modifier(Modifier::BOLD)
+            } else {
+                base
             }
         } else if tab.is_auto_named() {
             Style::default()

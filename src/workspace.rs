@@ -189,20 +189,19 @@ impl DerefMut for Workspace {
     }
 }
 
-fn compose_display_name(label: &str, ticket: Option<String>, pr: Option<u32>, merged: bool) -> String {
-    let mut s = label.to_string();
-    if let Some(t) = ticket {
-        s.push_str(" - ");
-        s.push_str(&t);
-    }
+/// Compose an active-tab label from the workspace's ticket/PR state.
+/// Returns None when there is neither a ticket nor a PR (caller falls back to the number).
+fn compose_tab_label(ticket: Option<&str>, pr: Option<u32>, merged: bool) -> Option<String> {
+    let mut s = String::new();
+    if let Some(t) = ticket { s.push_str(t); }
     if let Some(p) = pr {
-        s.push_str(" #");
+        if !s.is_empty() { s.push(' '); }
+        s.push('#');
         s.push_str(&p.to_string());
-        if merged {
-            s.push_str(" ✓");
-        }
     }
-    s
+    if s.is_empty() { return None; }
+    if merged && pr.is_some() { s.push_str(" ✓"); }
+    Some(s)
 }
 
 impl Workspace {
@@ -1077,11 +1076,9 @@ impl Workspace {
         if let Some(name) = &self.custom_name {
             return name.clone();
         }
-        let label = self
-            .resolved_identity_cwd()
+        self.resolved_identity_cwd()
             .map(|cwd| derive_label_from_cwd(&cwd))
-            .unwrap_or_else(|| "workspace".into());
-        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number, self.pr_merged)
+            .unwrap_or_else(|| "workspace".into())
     }
 
     pub fn display_name_from(
@@ -1092,11 +1089,30 @@ impl Workspace {
         if let Some(name) = &self.custom_name {
             return name.clone();
         }
-        let label = self
-            .resolved_identity_cwd_from(terminals, terminal_runtimes)
+        self.resolved_identity_cwd_from(terminals, terminal_runtimes)
             .map(|cwd| derive_label_from_cwd(&cwd))
-            .unwrap_or_else(|| "workspace".into());
-        compose_display_name(&label, self.cached_ticket.clone(), self.pr_number, self.pr_merged)
+            .unwrap_or_else(|| "workspace".into())
+    }
+
+    /// Return the effective display label for the tab at `tab_idx`.
+    /// Manual custom_name always wins. For the active tab, composes ticket/PR if available.
+    /// Otherwise falls back to the tab's own display_name (custom_name or number).
+    pub(crate) fn effective_tab_label(&self, tab_idx: usize) -> String {
+        let is_custom = self
+            .tabs
+            .get(tab_idx)
+            .is_some_and(|tab| tab.custom_name.is_some());
+        if !is_custom && tab_idx == self.active_tab {
+            if let Some(label) = compose_tab_label(
+                self.cached_ticket.as_deref(),
+                self.pr_number,
+                self.pr_merged,
+            ) {
+                return label;
+            }
+        }
+        self.tab_display_name(tab_idx)
+            .unwrap_or_else(|| (tab_idx + 1).to_string())
     }
 
     pub fn branch(&self) -> Option<String> {
@@ -1508,32 +1524,67 @@ fn derive_ticket(worktree_name: Option<&str>, branch: Option<&str>) -> Option<St
 mod tests {
     use super::*;
 
-    fn composed(label: &str, ticket: Option<&str>, pr: Option<u32>) -> String {
-        compose_display_name(label, ticket.map(str::to_string), pr, false)
+    #[test]
+    fn compose_tab_label_ticket_pr_merged() {
+        assert_eq!(
+            compose_tab_label(Some("TA-264"), Some(301), true),
+            Some("TA-264 #301 ✓".to_string())
+        );
+    }
+    #[test]
+    fn compose_tab_label_ticket_only() {
+        assert_eq!(compose_tab_label(Some("TA-264"), None, false), Some("TA-264".to_string()));
+    }
+    #[test]
+    fn compose_tab_label_pr_only() {
+        assert_eq!(compose_tab_label(None, Some(301), false), Some("#301".to_string()));
+    }
+    #[test]
+    fn compose_tab_label_neither() {
+        assert_eq!(compose_tab_label(None, None, false), None);
     }
 
     #[test]
-    fn compose_space_only() {
-        assert_eq!(composed("ta-core", None, None), "ta-core");
+    fn effective_tab_label_active_tab_composes() {
+        let mut ws = Workspace::test_new("test");
+        ws.active_tab = 0;
+        ws.cached_ticket = Some("TA-264".into());
+        ws.pr_number = Some(301);
+        ws.pr_merged = false;
+        assert_eq!(ws.effective_tab_label(0), "TA-264 #301");
     }
     #[test]
-    fn compose_space_ticket() {
-        assert_eq!(composed("ta-core", Some("TA-264"), None), "ta-core - TA-264");
+    fn effective_tab_label_non_active_tab_returns_number() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(None);
+        ws.active_tab = 0;
+        ws.cached_ticket = Some("TA-264".into());
+        ws.pr_number = Some(301);
+        assert_eq!(ws.effective_tab_label(1), "2");
     }
     #[test]
-    fn compose_space_ticket_pr() {
-        assert_eq!(composed("ta-core", Some("TA-264"), Some(301)), "ta-core - TA-264 #301");
+    fn effective_tab_label_custom_name_wins_even_if_active() {
+        let mut ws = Workspace::test_new("test");
+        ws.active_tab = 0;
+        ws.cached_ticket = Some("TA-264".into());
+        ws.pr_number = Some(301);
+        ws.tabs[0].custom_name = Some("my-tab".into());
+        assert_eq!(ws.effective_tab_label(0), "my-tab");
     }
     #[test]
-    fn compose_space_pr_no_ticket() {
-        assert_eq!(composed("ta-core", None, Some(301)), "ta-core #301");
+    fn effective_tab_label_active_tab_no_ticket_pr_returns_number() {
+        let ws = Workspace::test_new("test");
+        assert_eq!(ws.effective_tab_label(0), "1");
     }
+
     #[test]
-    fn compose_marks_merged() {
-        assert_eq!(
-            compose_display_name("ta-core", Some("TA-264".into()), Some(301), true),
-            "ta-core - TA-264 #301 ✓"
-        );
+    fn workspace_display_name_plain_label_when_ticket_and_pr_set() {
+        let mut ws = Workspace::test_new("my-project");
+        ws.cached_ticket = Some("TA-264".into());
+        ws.pr_number = Some(301);
+        ws.pr_merged = true;
+        // workspace display_name must stay plain (no ticket/PR composition)
+        assert_eq!(ws.display_name(), "my-project");
     }
 
     #[test]
