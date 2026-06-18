@@ -2479,13 +2479,9 @@ impl AppState {
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) {
         for ws_idx in 0..self.workspaces.len() {
-            let pr_number = self.workspaces[ws_idx].pr_number;
-            let pr_merged = self.workspaces[ws_idx].pr_merged;
             for tab_idx in 0..self.workspaces[ws_idx].tabs.len() {
                 let terminals = &self.terminals;
                 self.workspaces[ws_idx].tabs[tab_idx].recompute_ticket(terminals, terminal_runtimes);
-                self.workspaces[ws_idx].tabs[tab_idx].pr_number = pr_number;
-                self.workspaces[ws_idx].tabs[tab_idx].pr_merged = pr_merged;
             }
         }
     }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{TabCreateParams, TabListParams, TabReportPrParams, TabRenameParams};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -15,6 +15,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
         "close" => tab_close(&args[1..]),
+        "report-pr" => tab_report_pr(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
             Ok(0)
@@ -174,6 +175,55 @@ fn tab_close(args: &[String]) -> std::io::Result<i32> {
     super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
 }
 
+fn tab_report_pr(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_tab_id) = args.first() else {
+        eprintln!("usage: herdr tab report-pr <tab_id> --pr <number> | --clear-pr [--merged]");
+        return Ok(2);
+    };
+
+    let tab_id = super::normalize_tab_id(raw_tab_id);
+    let mut pr = None;
+    let mut clear_pr = false;
+    let mut merged = false;
+
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pr" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --pr");
+                    return Ok(2);
+                };
+                let Ok(n) = value.parse::<u32>() else {
+                    eprintln!("--pr must be a positive integer");
+                    return Ok(2);
+                };
+                pr = Some(n);
+                index += 2;
+            }
+            "--clear-pr" => {
+                clear_pr = true;
+                index += 1;
+            }
+            "--merged" => {
+                merged = true;
+                index += 1;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+
+    super::runtime::tab_report_pr(TabReportPrParams {
+        tab_id,
+        pr,
+        clear_pr,
+        merged,
+    })
+}
+
 fn print_tab_help() {
     eprintln!("herdr tab commands:");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
@@ -184,4 +234,5 @@ fn print_tab_help() {
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab close <tab_id>");
+    eprintln!("  herdr tab report-pr <tab_id> --pr <number> | --clear-pr [--merged]");
 }

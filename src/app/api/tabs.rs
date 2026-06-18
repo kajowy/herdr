@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    TabMoveParams, TabReportPrParams, TabRenameParams, TabTarget,
 };
 use crate::app::{App, Mode};
 
@@ -281,6 +281,34 @@ impl App {
             })
             .unwrap_or_default()
     }
+
+    pub(super) fn handle_tab_report_pr(
+        &mut self,
+        id: String,
+        params: TabReportPrParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        if params.clear_pr {
+            tab.pr_number = None;
+            tab.pr_merged = false;
+        } else {
+            tab.pr_number = params.pr;
+            // note: close-on-merge deferred for per-tab
+            tab.pr_merged = params.merged;
+        }
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
+    }
 }
 
 fn workspace_not_found(id: String, workspace_id: &str) -> String {
@@ -421,5 +449,75 @@ mod tests {
             crate::worktree::canonical_or_original(&cached_cwd)
         );
         shutdown_test_runtimes(&mut app);
+    }
+
+    fn two_tab_app() -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut ws = Workspace::test_new("ws");
+        ws.test_add_tab(None);
+        app.state.workspaces = vec![ws];
+        app
+    }
+
+    #[test]
+    fn tab_report_pr_sets_per_tab_pr() {
+        let mut app = two_tab_app();
+        let tab1_id = app.public_tab_id(0, 0).unwrap();
+        let tab2_id = app.public_tab_id(0, 1).unwrap();
+
+        let resp = app.handle_tab_report_pr(
+            "req".into(),
+            TabReportPrParams {
+                tab_id: tab2_id.clone(),
+                pr: Some(7),
+                clear_pr: false,
+                merged: false,
+            },
+        );
+        let _: SuccessResponse = serde_json::from_str(&resp).unwrap();
+
+        assert_eq!(app.state.workspaces[0].tabs[1].pr_number, Some(7));
+        assert_eq!(app.state.workspaces[0].tabs[0].pr_number, None, "tab 1 must be unaffected");
+        drop(tab1_id);
+    }
+
+    #[test]
+    fn tab_report_pr_clear_resets() {
+        let mut app = two_tab_app();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_tab_report_pr(
+            "req1".into(),
+            TabReportPrParams { tab_id: tab_id.clone(), pr: Some(42), clear_pr: false, merged: false },
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].pr_number, Some(42));
+
+        app.handle_tab_report_pr(
+            "req2".into(),
+            TabReportPrParams { tab_id: tab_id.clone(), pr: None, clear_pr: true, merged: false },
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].pr_number, None);
+        assert!(!app.state.workspaces[0].tabs[0].pr_merged);
+    }
+
+    #[test]
+    fn tab_report_pr_merged_sets_pr_merged() {
+        let mut app = two_tab_app();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_tab_report_pr(
+            "req".into(),
+            TabReportPrParams { tab_id, pr: Some(9), clear_pr: false, merged: true },
+        );
+        assert!(app.state.workspaces[0].tabs[0].pr_merged);
+        assert_eq!(app.state.workspaces[0].tabs[0].pr_number, Some(9));
+        assert_eq!(app.state.workspaces.len(), 1, "no workspace should close");
     }
 }

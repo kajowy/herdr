@@ -215,13 +215,9 @@ impl App {
         // Derive ticket for all tabs of the new workspace immediately so the tab bar
         // shows the ticket before the first git-status tick.
         {
-            let pr_number = self.state.workspaces[idx].pr_number;
-            let pr_merged = self.state.workspaces[idx].pr_merged;
             let terminals = &self.state.terminals;
             for tab in &mut self.state.workspaces[idx].tabs {
                 tab.recompute_ticket(terminals, &self.terminal_runtimes);
-                tab.pr_number = pr_number;
-                tab.pr_merged = pr_merged;
             }
         }
         self.state

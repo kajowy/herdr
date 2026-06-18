@@ -1,8 +1,8 @@
 use crate::api::schema::{
     EmptyParams, Method, PaneFocusDirectionParams, PaneMoveParams, PaneRenameParams,
     PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomParams, Request,
-    TabCreateParams, TabListParams, TabRenameParams, TabTarget, WorkspaceCreateParams,
-    WorkspaceRenameParams, WorkspaceReportPrParams, WorkspaceTarget, WorktreeCreateParams,
+    TabCreateParams, TabListParams, TabReportPrParams, TabRenameParams, TabTarget,
+    WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget, WorktreeCreateParams,
     WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
@@ -49,11 +49,8 @@ pub(super) fn workspace_close(workspace_id: String) -> std::io::Result<i32> {
     )
 }
 
-pub(super) fn workspace_report_pr(params: WorkspaceReportPrParams) -> std::io::Result<i32> {
-    print_method_response(
-        "cli:workspace:report_pr",
-        Method::WorkspaceReportPr(params),
-    )
+pub(super) fn tab_report_pr(params: TabReportPrParams) -> std::io::Result<i32> {
+    print_method_response("cli:tab:report_pr", Method::TabReportPr(params))
 }
 
 pub(super) fn tab_list(params: TabListParams) -> std::io::Result<i32> {

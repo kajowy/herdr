@@ -457,13 +457,13 @@ impl App {
                 false
             } else {
                 workspace.worktree_space = Some(membership);
-                workspace.recompute_ticket();
                 true
             }
         } else {
             false
         };
         if changed {
+            self.state.recompute_tab_tickets(&self.terminal_runtimes);
             self.state.mark_session_dirty();
             if emit_update {
                 self.emit_workspace_updated(ws_idx);

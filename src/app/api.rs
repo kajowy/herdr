@@ -911,8 +911,12 @@ impl App {
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
             }
-            Method::WorkspaceReportPr(params) => {
-                return self.handle_workspace_report_pr(request.id, params);
+            Method::WorkspaceReportPr(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "removed",
+                    "workspace.report_pr removed; use tab.report_pr",
+                );
             }
             Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
             Method::WorktreeCreate(params) => {
@@ -939,6 +943,7 @@ impl App {
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
+            Method::TabReportPr(params) => return self.handle_tab_report_pr(request.id, params),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),

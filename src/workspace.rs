@@ -151,10 +151,6 @@ pub struct Workspace {
     pub identity_cwd: PathBuf,
     /// Cached current git branch for the workspace repo.
     pub(crate) cached_git_branch: Option<String>,
-    /// PR number reported by the agent/hook for this workspace's branch.
-    pub(crate) pr_number: Option<u32>,
-    /// Set when the reported PR has been merged.
-    pub(crate) pr_merged: bool,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
@@ -232,8 +228,6 @@ impl Workspace {
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
-            pr_number: None,
-            pr_merged: false,
             cached_git_ahead_behind: None,
             cached_git_space: git_space_metadata(&identity_cwd),
             worktree_space: None,
@@ -415,8 +409,6 @@ impl Workspace {
                 custom_name: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_git_branch: git_branch(&initial_cwd),
-                pr_number: None,
-                pr_merged: false,
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
                 worktree_space: None,
@@ -1124,21 +1116,6 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
-    /// Recompute the ticket from the workspace's worktree/branch and propagate to all tabs.
-    /// Called by worktree-assignment paths that don't have terminal context.
-    pub(crate) fn recompute_ticket(&mut self) {
-        let worktree = self
-            .worktree_space
-            .as_ref()
-            .and_then(|m| m.checkout_path.file_name())
-            .and_then(|n| n.to_str())
-            .map(str::to_string);
-        let ticket = derive_ticket(worktree.as_deref(), self.cached_git_branch.as_deref());
-        for tab in &mut self.tabs {
-            tab.cached_ticket = ticket.clone();
-        }
-    }
-
     #[cfg(test)]
     pub fn refresh_git_ahead_behind(&mut self) {
         let cwd = self.resolved_identity_cwd();
@@ -1262,8 +1239,6 @@ impl Workspace {
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
-            pr_number: None,
-            pr_merged: false,
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,

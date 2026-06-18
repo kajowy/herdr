@@ -92,6 +92,10 @@ pub struct TabSnapshot {
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pr_merged: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -149,6 +153,8 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
+            pr_number: None,
+            pr_merged: false,
         };
 
         Self {
@@ -376,6 +382,8 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+        pr_number: tab.pr_number,
+        pr_merged: tab.pr_merged,
     }
 }
 
@@ -643,6 +651,8 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    pr_number: None,
+                    pr_merged: false,
                 }],
                 active_tab: 0,
             }],
@@ -1198,6 +1208,8 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    pr_number: None,
+                    pr_merged: false,
                 }],
                 active_tab: 0,
             }],
@@ -1215,5 +1227,41 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
         );
+    }
+
+    #[test]
+    fn tab_pr_fields_round_trip_via_capture_and_parse() {
+        let mut state = state_with_workspaces(&["proj"]);
+        state.workspaces[0].tabs[0].pr_number = Some(7);
+        state.workspaces[0].tabs[0].pr_merged = true;
+
+        let snapshot = capture_from_state(&state);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert_eq!(restored.workspaces[0].tabs[0].pr_number, Some(7));
+        assert!(restored.workspaces[0].tabs[0].pr_merged);
+    }
+
+    #[test]
+    fn tab_pr_fields_absent_from_old_snapshot_default_to_none() {
+        let json = serde_json::json!({
+            "version": SNAPSHOT_VERSION,
+            "workspaces": [{
+                "id": "w1",
+                "identity_cwd": "/tmp/proj",
+                "tabs": [{
+                    "layout": {"Pane": 0},
+                    "panes": { "0": { "cwd": "/tmp/proj" } },
+                    "zoomed": false
+                }],
+                "active_tab": 0
+            }],
+            "active": null,
+            "selected": 0
+        });
+        let snap = parse_snapshot(&json.to_string()).unwrap();
+        assert_eq!(snap.workspaces[0].tabs[0].pr_number, None);
+        assert!(!snap.workspaces[0].tabs[0].pr_merged);
     }
 }

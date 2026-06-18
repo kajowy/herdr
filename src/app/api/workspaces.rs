@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCreateParams,
-    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceReportPrParams, WorkspaceTarget,
+    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 use crate::app::App;
-use crate::config::OnPrMergeConfig;
 
 use super::responses::{encode_error, encode_success};
 
@@ -154,46 +153,6 @@ impl App {
         encode_success(id, ResponseResult::WorkspaceList { workspaces })
     }
 
-    pub(super) fn handle_workspace_report_pr(
-        &mut self,
-        id: String,
-        params: WorkspaceReportPrParams,
-    ) -> String {
-        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return workspace_not_found(id, &params.workspace_id);
-        };
-        let Some(ws) = self.state.workspaces.get_mut(index) else {
-            return workspace_not_found(id, &params.workspace_id);
-        };
-        if params.clear_pr {
-            ws.pr_number = None;
-            ws.pr_merged = false;
-        } else {
-            ws.pr_number = params.pr;
-            ws.pr_merged = params.merged;
-        }
-        if params.merged && !params.clear_pr {
-            let policy = self.state.on_pr_merge;
-            match policy {
-                OnPrMergeConfig::Mark => {}
-                OnPrMergeConfig::CloseAlways => {
-                    self.state.selected = index;
-                    self.state.close_selected_workspace();
-                    self.shutdown_detached_terminal_runtimes();
-                }
-                OnPrMergeConfig::CloseIfClean => {
-                    // Conservative: herdr has no cached "uncommitted changes" flag yet, so we
-                    // cannot verify the working tree is clean without shelling out (forbidden).
-                    // Until a `has_uncommitted_changes` flag is cached during the git-refresh
-                    // cycle, close-if-clean must NOT close a pane — doing so risks discarding
-                    // unsaved work. It falls back to mark-only (the merged marker is already set).
-                }
-            }
-        }
-        self.schedule_session_save();
-        encode_success(id, ResponseResult::Ok {})
-    }
-
     pub(super) fn handle_workspace_close(&mut self, id: String, target: WorkspaceTarget) -> String {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
@@ -250,7 +209,7 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{api::schema::SuccessResponse, config::{Config, OnPrMergeConfig}, workspace::Workspace};
+    use crate::{api::schema::SuccessResponse, config::Config, workspace::Workspace};
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the
@@ -352,123 +311,6 @@ mod tests {
             is_linked_worktree: true,
         });
         app
-    }
-
-    #[test]
-    fn report_pr_sets_and_clears_pr_number() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.workspaces = vec![Workspace::test_new("myws")];
-        let id = app.state.workspaces[0].id.clone();
-
-        app.handle_workspace_report_pr(
-            "req".into(),
-            WorkspaceReportPrParams {
-                workspace_id: id.clone(),
-                pr: Some(301),
-                clear_pr: false,
-                merged: false,
-            },
-        );
-        assert_eq!(app.state.workspaces[0].pr_number, Some(301));
-
-        app.handle_workspace_report_pr(
-            "req2".into(),
-            WorkspaceReportPrParams {
-                workspace_id: id.clone(),
-                pr: None,
-                clear_pr: true,
-                merged: false,
-            },
-        );
-        assert_eq!(app.state.workspaces[0].pr_number, None);
-    }
-
-    #[test]
-    fn mark_policy_sets_marker_and_does_not_close() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.on_pr_merge = OnPrMergeConfig::Mark;
-        app.state.workspaces = vec![Workspace::test_new("myws")];
-        let id = app.state.workspaces[0].id.clone();
-
-        app.handle_workspace_report_pr(
-            "req".into(),
-            WorkspaceReportPrParams {
-                workspace_id: id.clone(),
-                pr: Some(301),
-                clear_pr: false,
-                merged: true,
-            },
-        );
-        assert_eq!(app.state.workspaces[0].pr_number, Some(301));
-        assert!(app.state.workspaces[0].pr_merged);
-        assert_eq!(app.state.workspaces.len(), 1, "Mark policy must not close workspace");
-    }
-
-    #[test]
-    fn close_always_policy_closes_workspace_pane_on_merge() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.on_pr_merge = OnPrMergeConfig::CloseAlways;
-        app.state.workspaces = vec![Workspace::test_new("myws")];
-        let id = app.state.workspaces[0].id.clone();
-
-        app.handle_workspace_report_pr(
-            "req".into(),
-            WorkspaceReportPrParams {
-                workspace_id: id.clone(),
-                pr: Some(301),
-                clear_pr: false,
-                merged: true,
-            },
-        );
-        assert!(app.state.workspaces.is_empty(), "CloseAlways policy must close workspace");
-    }
-
-    #[test]
-    fn close_if_clean_does_not_close_pane() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.on_pr_merge = OnPrMergeConfig::CloseIfClean;
-        app.state.workspaces = vec![Workspace::test_new("myws")];
-        let id = app.state.workspaces[0].id.clone();
-
-        app.handle_workspace_report_pr(
-            "req".into(),
-            WorkspaceReportPrParams {
-                workspace_id: id.clone(),
-                pr: Some(301),
-                clear_pr: false,
-                merged: true,
-            },
-        );
-        assert!(app.state.workspaces[0].pr_merged, "merged marker must be set");
-        assert_eq!(app.state.workspaces.len(), 1, "CloseIfClean must not close the workspace");
     }
 
     #[test]
