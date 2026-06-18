@@ -151,8 +151,6 @@ pub struct Workspace {
     pub identity_cwd: PathBuf,
     /// Cached current git branch for the workspace repo.
     pub(crate) cached_git_branch: Option<String>,
-    /// Cached ticket id (e.g. `TA-264`) derived from branch/worktree during git refresh.
-    pub(crate) cached_ticket: Option<String>,
     /// PR number reported by the agent/hook for this workspace's branch.
     pub(crate) pr_number: Option<u32>,
     /// Set when the reported PR has been merged.
@@ -234,7 +232,6 @@ impl Workspace {
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
-            cached_ticket: None,
             pr_number: None,
             pr_merged: false,
             cached_git_ahead_behind: None,
@@ -418,7 +415,6 @@ impl Workspace {
                 custom_name: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_git_branch: git_branch(&initial_cwd),
-                cached_ticket: None,
                 pr_number: None,
                 pr_merged: false,
                 cached_git_ahead_behind: None,
@@ -1095,21 +1091,18 @@ impl Workspace {
     }
 
     /// Return the effective display label for the tab at `tab_idx`.
-    /// Manual custom_name always wins. For the active tab, composes ticket/PR if available.
-    /// Otherwise falls back to the tab's own display_name (custom_name or number).
+    /// Manual custom_name always wins. Composes ticket/PR from the tab's own cached fields.
+    /// Falls back to the tab's display_name (custom_name or number).
     pub(crate) fn effective_tab_label(&self, tab_idx: usize) -> String {
-        let is_custom = self
-            .tabs
-            .get(tab_idx)
-            .is_some_and(|tab| tab.custom_name.is_some());
-        if !is_custom && tab_idx == self.active_tab {
-            if let Some(label) = compose_tab_label(
-                self.cached_ticket.as_deref(),
-                self.pr_number,
-                self.pr_merged,
-            ) {
-                return label;
+        let has_ticket_label = self.tabs.get(tab_idx).and_then(|tab| {
+            if tab.custom_name.is_some() {
+                None
+            } else {
+                compose_tab_label(tab.cached_ticket.as_deref(), tab.pr_number, tab.pr_merged)
             }
+        });
+        if let Some(label) = has_ticket_label {
+            return label;
         }
         self.tab_display_name(tab_idx)
             .unwrap_or_else(|| (tab_idx + 1).to_string())
@@ -1131,6 +1124,8 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
+    /// Recompute the ticket from the workspace's worktree/branch and propagate to all tabs.
+    /// Called by worktree-assignment paths that don't have terminal context.
     pub(crate) fn recompute_ticket(&mut self) {
         let worktree = self
             .worktree_space
@@ -1138,7 +1133,10 @@ impl Workspace {
             .and_then(|m| m.checkout_path.file_name())
             .and_then(|n| n.to_str())
             .map(str::to_string);
-        self.cached_ticket = derive_ticket(worktree.as_deref(), self.cached_git_branch.as_deref());
+        let ticket = derive_ticket(worktree.as_deref(), self.cached_git_branch.as_deref());
+        for tab in &mut self.tabs {
+            tab.cached_ticket = ticket.clone();
+        }
     }
 
     #[cfg(test)]
@@ -1253,6 +1251,9 @@ impl Workspace {
             events,
             render_notify,
             render_dirty,
+            cached_ticket: None,
+            pr_number: None,
+            pr_merged: false,
         };
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
@@ -1261,7 +1262,6 @@ impl Workspace {
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
-            cached_ticket: None,
             pr_number: None,
             pr_merged: false,
             cached_git_ahead_behind: None,
@@ -1307,6 +1307,9 @@ impl Workspace {
             events,
             render_notify,
             render_dirty,
+            cached_ticket: None,
+            pr_number: None,
+            pr_merged: false,
         };
         self.next_public_tab_number += 1;
         self.register_new_pane(root_id);
@@ -1490,7 +1493,7 @@ impl Workspace {
 
 /// Derive an upper-cased ticket id like `TA-264` from a worktree name or branch.
 /// Worktree name takes priority. Returns None when no `letters-digits` token is found.
-fn derive_ticket(worktree_name: Option<&str>, branch: Option<&str>) -> Option<String> {
+pub(crate) fn derive_ticket(worktree_name: Option<&str>, branch: Option<&str>) -> Option<String> {
     fn scan(s: &str) -> Option<String> {
         let bytes = s.as_bytes();
         let mut i = 0;
@@ -1547,42 +1550,49 @@ mod tests {
     #[test]
     fn effective_tab_label_active_tab_composes() {
         let mut ws = Workspace::test_new("test");
-        ws.active_tab = 0;
-        ws.cached_ticket = Some("TA-264".into());
-        ws.pr_number = Some(301);
-        ws.pr_merged = false;
+        ws.tabs[0].cached_ticket = Some("TA-264".into());
+        ws.tabs[0].pr_number = Some(301);
+        ws.tabs[0].pr_merged = false;
         assert_eq!(ws.effective_tab_label(0), "TA-264 #301");
     }
     #[test]
-    fn effective_tab_label_non_active_tab_returns_number() {
+    fn effective_tab_label_non_active_tab_also_composes() {
         let mut ws = Workspace::test_new("test");
         ws.test_add_tab(None);
         ws.active_tab = 0;
-        ws.cached_ticket = Some("TA-264".into());
-        ws.pr_number = Some(301);
-        assert_eq!(ws.effective_tab_label(1), "2");
+        ws.tabs[1].cached_ticket = Some("TA-264".into());
+        ws.tabs[1].pr_number = Some(301);
+        assert_eq!(ws.effective_tab_label(1), "TA-264 #301");
+    }
+    #[test]
+    fn effective_tab_label_each_tab_independent() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(None);
+        ws.tabs[0].cached_ticket = Some("TA-100".into());
+        ws.tabs[1].cached_ticket = Some("TA-200".into());
+        assert_eq!(ws.effective_tab_label(0), "TA-100");
+        assert_eq!(ws.effective_tab_label(1), "TA-200");
     }
     #[test]
     fn effective_tab_label_custom_name_wins_even_if_active() {
         let mut ws = Workspace::test_new("test");
-        ws.active_tab = 0;
-        ws.cached_ticket = Some("TA-264".into());
-        ws.pr_number = Some(301);
+        ws.tabs[0].cached_ticket = Some("TA-264".into());
+        ws.tabs[0].pr_number = Some(301);
         ws.tabs[0].custom_name = Some("my-tab".into());
         assert_eq!(ws.effective_tab_label(0), "my-tab");
     }
     #[test]
-    fn effective_tab_label_active_tab_no_ticket_pr_returns_number() {
+    fn effective_tab_label_no_ticket_pr_returns_number() {
         let ws = Workspace::test_new("test");
         assert_eq!(ws.effective_tab_label(0), "1");
     }
 
     #[test]
-    fn workspace_display_name_plain_label_when_ticket_and_pr_set() {
+    fn workspace_display_name_plain_label_when_tab_has_ticket_and_pr() {
         let mut ws = Workspace::test_new("my-project");
-        ws.cached_ticket = Some("TA-264".into());
-        ws.pr_number = Some(301);
-        ws.pr_merged = true;
+        ws.tabs[0].cached_ticket = Some("TA-264".into());
+        ws.tabs[0].pr_number = Some(301);
+        ws.tabs[0].pr_merged = true;
         // workspace display_name must stay plain (no ticket/PR composition)
         assert_eq!(ws.display_name(), "my-project");
     }
@@ -1763,11 +1773,18 @@ mod tests {
     }
 
     #[test]
-    fn recompute_ticket_from_branch() {
+    fn tab_recompute_ticket_from_cwd_basename() {
         let mut ws = Workspace::test_new("ignored");
-        ws.cached_git_branch = Some("feature/ta-7-x".into());
-        ws.recompute_ticket();
-        assert_eq!(ws.cached_ticket, Some("TA-7".to_string()));
+        let root_pane = ws.tabs[0].root_pane;
+        let terminal_id = ws.tabs[0].terminal_id(root_pane).unwrap().clone();
+        let mut terminals = HashMap::new();
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, PathBuf::from("/x/ta-264-communities-spec")),
+        );
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        ws.tabs[0].recompute_ticket(&terminals, &terminal_runtimes);
+        assert_eq!(ws.tabs[0].cached_ticket, Some("TA-264".to_string()));
     }
 
     #[test]

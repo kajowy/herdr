@@ -49,6 +49,12 @@ pub struct Tab {
     pub events: mpsc::Sender<AppEvent>,
     pub(crate) render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<AtomicBool>,
+    /// Cached ticket id (e.g. `TA-264`) derived from root pane cwd during git refresh.
+    pub(crate) cached_ticket: Option<String>,
+    /// PR number reported by the agent/hook for this tab's branch.
+    pub(crate) pr_number: Option<u32>,
+    /// Set when the reported PR has been merged.
+    pub(crate) pr_merged: bool,
 }
 
 impl Tab {
@@ -179,6 +185,9 @@ impl Tab {
                 events,
                 render_notify,
                 render_dirty,
+                cached_ticket: None,
+                pr_number: None,
+                pr_merged: false,
             },
             terminal,
             runtime,
@@ -444,6 +453,9 @@ impl Tab {
         Self {
             custom_name,
             number,
+            cached_ticket: None,
+            pr_number: None,
+            pr_merged: false,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,
@@ -539,6 +551,17 @@ impl Tab {
         self.panes
             .get(&pane_id)
             .map(|pane| &pane.attached_terminal_id)
+    }
+
+    pub(crate) fn recompute_ticket(
+        &mut self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) {
+        let worktree_name = self
+            .cwd_for_pane(self.root_pane, terminals, terminal_runtimes)
+            .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string));
+        self.cached_ticket = crate::workspace::derive_ticket(worktree_name.as_deref(), None);
     }
 
     pub fn cwd_for_pane(

@@ -404,12 +404,11 @@ fn restore_workspace(
 
     let worktree_space = restored_worktree_space_membership(snap.worktree_space.clone());
 
-    let mut ws = Workspace {
+    let ws = Workspace {
         id: workspace_id,
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
         cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
-        cached_ticket: None,
         pr_number: None,
         pr_merged: false,
         cached_git_ahead_behind: None,
@@ -423,7 +422,8 @@ fn restore_workspace(
         #[cfg(test)]
         test_runtimes: HashMap::new(),
     };
-    ws.recompute_ticket();
+    // Tab tickets recompute on the first git-status tick after restore,
+    // when terminals are fully initialized.
 
     (
         Some((ws, terminals, terminal_runtimes)),
@@ -713,6 +713,9 @@ fn restore_tab(
                 events: runtime_context.events.clone(),
                 render_notify: runtime_context.render_notify.clone(),
                 render_dirty: runtime_context.render_dirty.clone(),
+                cached_ticket: None,
+                pr_number: None,
+                pr_merged: false,
             },
             terminals,
             terminal_runtimes,
@@ -1696,13 +1699,12 @@ mod tests {
     }
 
     #[test]
-    fn restore_workspace_derives_ticket_from_branch() {
-        // Mirrors what restore_workspace now does: construct the Workspace then call
-        // recompute_ticket() before returning it, so the ticket is set on restore.
-        let mut ws = Workspace::test_new("any");
-        ws.cached_git_branch = Some("feat/ta-264-add-panel".into());
-        ws.cached_ticket = None;
-        ws.recompute_ticket();
-        assert_eq!(ws.cached_ticket, Some("TA-264".to_string()));
+    fn restore_workspace_tab_tickets_deferred_to_git_tick() {
+        // After restore, tab tickets start as None and are recomputed on the first git tick.
+        let ws = Workspace::test_new("any");
+        assert!(
+            ws.tabs[0].cached_ticket.is_none(),
+            "tab ticket must be None immediately after restore; recomputed on first git tick"
+        );
     }
 }
