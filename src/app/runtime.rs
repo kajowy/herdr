@@ -5,11 +5,12 @@ use crossterm::terminal;
 use super::{
     background_update_check_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
     AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    PR_STATUS_CACHE_TTL, PR_STATUS_REFRESH_INTERVAL, RESIZE_POLL_INTERVAL,
+    SELECTION_AUTOSCROLL_INTERVAL,
 };
 use crate::events::AppEvent;
-use crate::workspace::{GitStatusCacheEntry, Workspace, WorkspaceGitStatus};
-use std::collections::HashMap;
+use crate::workspace::{GitStatusCacheEntry, PrStatusResult, Workspace, WorkspaceGitStatus};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceGitRefreshItem {
@@ -266,6 +267,7 @@ impl App {
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
+        self.start_pr_status_refresh_if_due(now);
 
         if self
             .next_auto_update_check
@@ -505,6 +507,93 @@ impl App {
         });
     }
 
+    /// Dispatch a background `gh pr view` refresh if the coarse cadence has
+    /// elapsed and at least one (cwd, branch) key needs a fresh poll.
+    /// No-op unless `auto_tab_naming` is on and `gh` is on PATH, so the flag
+    /// off means zero `gh` subprocesses.
+    pub(crate) fn start_pr_status_refresh_if_due(&mut self, now: Instant) {
+        let Some(deadline) = self.pr_status_refresh_deadline() else {
+            return;
+        };
+
+        if now < deadline {
+            return;
+        }
+
+        if !self.state.auto_tab_naming || !crate::integration::command_available("gh") {
+            self.last_pr_status_refresh = now;
+            return;
+        }
+
+        let keys = self.pr_status_due_keys(now);
+        if keys.is_empty() {
+            self.last_pr_status_refresh = now;
+            return;
+        }
+
+        self.pr_status_refresh_in_flight = true;
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let results: Vec<PrStatusResult> = keys
+                .into_iter()
+                .map(|(cwd, branch)| {
+                    let outcome = crate::workspace::poll_pr_for_cwd(&cwd);
+                    PrStatusResult {
+                        cwd,
+                        branch,
+                        outcome,
+                    }
+                })
+                .collect();
+            let _ = event_tx.blocking_send(AppEvent::PrStatusRefreshed { results });
+        });
+    }
+
+    fn pr_status_refresh_deadline(&self) -> Option<Instant> {
+        (!self.pr_status_refresh_in_flight && !self.state.workspaces.is_empty())
+            .then_some(self.last_pr_status_refresh + PR_STATUS_REFRESH_INTERVAL)
+    }
+
+    /// Unique (cwd, branch) keys across all tabs currently on a git branch
+    /// whose cache entry is missing or older than [`PR_STATUS_CACHE_TTL`].
+    /// Pure and gh-free: returns empty immediately when `auto_tab_naming` is
+    /// off, so gating can be tested without touching scheduling state.
+    pub(crate) fn pr_status_due_keys(&self, now: Instant) -> Vec<(std::path::PathBuf, String)> {
+        if !self.state.auto_tab_naming {
+            return Vec::new();
+        }
+
+        let mut seen = HashSet::new();
+        let mut keys = Vec::new();
+        for ws in &self.state.workspaces {
+            for tab in &ws.tabs {
+                let Some(cwd) = tab.cwd_for_pane(
+                    tab.root_pane,
+                    &self.state.terminals,
+                    &self.terminal_runtimes,
+                ) else {
+                    continue;
+                };
+                let Some(branch) = crate::workspace::git_branch(&cwd) else {
+                    continue;
+                };
+                let cache_key = crate::workspace::git_status_cache_key(&cwd).unwrap_or(cwd);
+                let key = (cache_key, branch);
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let fresh = self
+                    .pr_status_cache
+                    .get(&key)
+                    .is_some_and(|entry| entry.polled_at + PR_STATUS_CACHE_TTL > now);
+                if !fresh {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
+    }
+
     pub(crate) fn mark_git_status_refresh_due(&mut self, now: Instant) {
         if self.git_refresh_in_flight {
             self.git_refresh_due_after_in_flight = true;
@@ -558,6 +647,9 @@ impl App {
             self.next_animation_tick,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
+                .flatten(),
+            include_git_refresh
+                .then(|| self.pr_status_refresh_deadline())
                 .flatten(),
             self.next_auto_update_check,
             self.next_agent_manifest_update_check,
@@ -751,6 +843,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(repo);
     }
 
+    fn temp_pr_runtime_dir(name: &str) -> PathBuf {
+        let unique = format!(
+            "herdr-pr-status-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    fn write_fake_repo_branch(root: &std::path::Path, branch: &str) {
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join(".git/HEAD"),
+            format!("ref: refs/heads/{branch}\n"),
+        )
+        .unwrap();
+    }
+
+    /// App with a single tab whose root pane cwd is a fake repo on `branch`.
+    fn app_with_tab_repo(branch: &str, dir_name: &str) -> (super::super::App, PathBuf) {
+        let mut app = super::super::App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces.push(Workspace::test_new("test"));
+        app.state.ensure_test_terminals();
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].terminal_id(pane).cloned().unwrap();
+        let repo = temp_pr_runtime_dir(dir_name);
+        write_fake_repo_branch(&repo, branch);
+        app.state.terminals.get_mut(&terminal_id).unwrap().cwd = repo.clone();
+        (app, repo)
+    }
+
+    #[test]
+    fn pr_status_due_keys_dedupes_same_repo_branch() {
+        let (mut app, repo) = app_with_tab_repo("feature", "dedupe");
+        app.state.workspaces[0].test_add_tab(None);
+        app.state.ensure_test_terminals();
+        let pane2 = app.state.workspaces[0].tabs[1].root_pane;
+        let terminal_id2 = app.state.workspaces[0].terminal_id(pane2).cloned().unwrap();
+        app.state.terminals.get_mut(&terminal_id2).unwrap().cwd = repo.clone();
+
+        let keys = app.pr_status_due_keys(Instant::now());
+
+        assert_eq!(
+            keys.len(),
+            1,
+            "two tabs on the same repo+branch dedupe to one key"
+        );
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn pr_status_due_keys_empty_when_auto_tab_naming_disabled() {
+        let (mut app, repo) = app_with_tab_repo("feature", "gating-off");
+        app.state.auto_tab_naming = false;
+
+        let keys = app.pr_status_due_keys(Instant::now());
+
+        assert!(keys.is_empty());
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn pr_status_due_keys_skips_entry_within_ttl_but_repolls_after() {
+        let (mut app, repo) = app_with_tab_repo("feature", "ttl");
+        let key = crate::workspace::git_status_cache_key(&repo).unwrap_or_else(|| repo.clone());
+        let now = Instant::now();
+        app.pr_status_cache.insert(
+            (key, "feature".to_string()),
+            crate::workspace::PrCacheEntry {
+                polled_at: now,
+                outcome: crate::workspace::PrPollOutcome::None,
+            },
+        );
+
+        assert!(
+            app.pr_status_due_keys(now).is_empty(),
+            "a fresh cache entry must not be re-polled within the TTL"
+        );
+
+        let stale_now = now + super::super::PR_STATUS_CACHE_TTL + Duration::from_secs(1);
+        assert_eq!(
+            app.pr_status_due_keys(stale_now).len(),
+            1,
+            "an entry older than the TTL is due again"
+        );
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn start_pr_status_refresh_if_due_noop_when_auto_tab_naming_disabled() {
+        let (mut app, repo) = app_with_tab_repo("feature", "start-off");
+        app.state.auto_tab_naming = false;
+        let now = Instant::now();
+        app.last_pr_status_refresh = now - super::super::PR_STATUS_REFRESH_INTERVAL;
+
+        app.start_pr_status_refresh_if_due(now);
+
+        assert!(
+            !app.pr_status_refresh_in_flight,
+            "flag off must never spawn a gh poll"
+        );
+        assert!(app.pr_status_cache.is_empty());
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
     #[test]
     fn git_refresh_items_use_cwd_cache_key_for_non_git_cwd() {
         let mut app = super::super::App::new(
@@ -786,6 +999,9 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.last_git_remote_status_refresh = now - super::super::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        // Keep the PR-status timer out of the way so this test only exercises
+        // the git-refresh deadline it's named for.
+        app.last_pr_status_refresh = now;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),

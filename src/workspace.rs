@@ -28,6 +28,7 @@ pub use self::{
     },
     tab::{NewPane, Tab},
 };
+pub(crate) use self::git::{poll_pr_for_cwd, PrCacheEntry, PrPollOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeSpaceMembership {
@@ -45,6 +46,14 @@ pub struct WorkspaceGitStatus {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+}
+
+/// Result of an off-thread `gh pr view` poll for one tab's (cwd, branch) key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrStatusResult {
+    pub(crate) cwd: PathBuf,
+    pub(crate) branch: String,
+    pub(crate) outcome: PrPollOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

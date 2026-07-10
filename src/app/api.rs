@@ -139,6 +139,29 @@ impl App {
             return;
         }
 
+        if let AppEvent::PrStatusRefreshed { results } = ev {
+            self.pr_status_refresh_in_flight = false;
+            let now = Instant::now();
+            for result in &results {
+                self.pr_status_cache.insert(
+                    (result.cwd.clone(), result.branch.clone()),
+                    crate::workspace::PrCacheEntry {
+                        polled_at: now,
+                        outcome: result.outcome,
+                    },
+                );
+            }
+            self.last_pr_status_refresh = now;
+            if self
+                .state
+                .apply_pr_statuses(&self.terminal_runtimes, results)
+            {
+                self.render_dirty.store(true, Ordering::Release);
+                self.render_notify.notify_one();
+            }
+            return;
+        }
+
         if let AppEvent::WorktreeAddFinished(result) = ev {
             self.handle_worktree_add_finished(*result);
             return;

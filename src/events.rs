@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{GitStatusCacheEntry, WorkspaceGitStatus};
+use crate::workspace::{GitStatusCacheEntry, PrStatusResult, WorkspaceGitStatus};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -155,6 +155,8 @@ pub enum AppEvent {
         stderr: String,
         error: Option<String>,
     },
+    /// Background `gh pr view` refresh completed for tabs.
+    PrStatusRefreshed { results: Vec<PrStatusResult> },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.

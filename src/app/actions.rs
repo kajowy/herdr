@@ -2475,6 +2475,67 @@ impl AppState {
         changed
     }
 
+    /// Apply background `gh pr view` poll results to tabs, keyed by each
+    /// tab's CURRENT (cache_key, branch) — a tab is only written when that
+    /// still matches the result's key, so a branch switch or cwd change
+    /// between dispatch and apply cannot land a stale PR on the wrong tab.
+    pub(crate) fn apply_pr_statuses(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        results: Vec<crate::workspace::PrStatusResult>,
+    ) -> bool {
+        let mut changed = false;
+        let mut by_key: std::collections::HashMap<
+            (std::path::PathBuf, String),
+            &crate::workspace::PrStatusResult,
+        > = std::collections::HashMap::new();
+        for result in &results {
+            by_key.insert((result.cwd.clone(), result.branch.clone()), result);
+        }
+
+        for ws_idx in 0..self.workspaces.len() {
+            for tab_idx in 0..self.workspaces[ws_idx].tabs.len() {
+                let terminals = &self.terminals;
+                let key = {
+                    let tab = &self.workspaces[ws_idx].tabs[tab_idx];
+                    tab.cwd_for_pane(tab.root_pane, terminals, terminal_runtimes)
+                        .and_then(|cwd| {
+                            let branch = crate::workspace::git_branch(&cwd)?;
+                            let cache_key =
+                                crate::workspace::git_status_cache_key(&cwd).unwrap_or(cwd);
+                            Some((cache_key, branch))
+                        })
+                };
+                let Some(key) = key else {
+                    continue;
+                };
+                let Some(result) = by_key.get(&key) else {
+                    continue;
+                };
+
+                let tab = &mut self.workspaces[ws_idx].tabs[tab_idx];
+                match result.outcome {
+                    crate::workspace::PrPollOutcome::Found { number, merged } => {
+                        if tab.pr_number != Some(number) || tab.pr_merged != merged {
+                            tab.pr_number = Some(number);
+                            tab.pr_merged = merged;
+                            changed = true;
+                        }
+                    }
+                    crate::workspace::PrPollOutcome::None => {
+                        if tab.pr_number.is_some() || tab.pr_merged {
+                            tab.pr_number = None;
+                            tab.pr_merged = false;
+                            changed = true;
+                        }
+                    }
+                    crate::workspace::PrPollOutcome::Unavailable => {}
+                }
+            }
+        }
+        changed
+    }
+
     pub(crate) fn recompute_tab_tickets(
         &mut self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
@@ -2482,7 +2543,8 @@ impl AppState {
         for ws_idx in 0..self.workspaces.len() {
             for tab_idx in 0..self.workspaces[ws_idx].tabs.len() {
                 let terminals = &self.terminals;
-                self.workspaces[ws_idx].tabs[tab_idx].recompute_ticket(terminals, terminal_runtimes);
+                self.workspaces[ws_idx].tabs[tab_idx]
+                    .recompute_ticket(terminals, terminal_runtimes);
             }
         }
     }
@@ -2710,6 +2772,10 @@ impl AppState {
             } => {
                 let _ = results;
                 let _ = cache_updates;
+                Vec::new()
+            }
+            AppEvent::PrStatusRefreshed { results } => {
+                let _ = results;
                 Vec::new()
             }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
@@ -3642,6 +3708,138 @@ mod tests {
         assert!(!changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
         assert_eq!(state.workspaces[0].git_ahead_behind(), Some((1, 0)));
+    }
+
+    fn temp_pr_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "herdr-apply-pr-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_fake_repo_branch(root: &std::path::Path, branch: &str) {
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join(".git/HEAD"),
+            format!("ref: refs/heads/{branch}\n"),
+        )
+        .unwrap();
+    }
+
+    fn set_tab_cwd(state: &mut AppState, ws_idx: usize, tab_idx: usize, cwd: &std::path::Path) {
+        let pane = state.workspaces[ws_idx].tabs[tab_idx].root_pane;
+        let terminal_id = state.workspaces[ws_idx].terminal_id(pane).cloned().unwrap();
+        state.terminals.get_mut(&terminal_id).unwrap().cwd = cwd.to_path_buf();
+    }
+
+    #[test]
+    fn apply_pr_statuses_updates_matching_tab_only() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].test_add_tab(None);
+        state.ensure_test_terminals();
+
+        let repo_a = temp_pr_test_dir("a");
+        let repo_b = temp_pr_test_dir("b");
+        write_fake_repo_branch(&repo_a, "feature-a");
+        write_fake_repo_branch(&repo_b, "feature-b");
+        set_tab_cwd(&mut state, 0, 0, &repo_a);
+        set_tab_cwd(&mut state, 0, 1, &repo_b);
+
+        let key_a =
+            crate::workspace::git_status_cache_key(&repo_a).unwrap_or_else(|| repo_a.clone());
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_pr_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PrStatusResult {
+                cwd: key_a,
+                branch: "feature-a".into(),
+                outcome: crate::workspace::PrPollOutcome::Found {
+                    number: 7,
+                    merged: false,
+                },
+            }],
+        );
+
+        assert!(changed);
+        assert_eq!(state.workspaces[0].tabs[0].pr_number, Some(7));
+        assert!(!state.workspaces[0].tabs[0].pr_merged);
+        assert_eq!(
+            state.workspaces[0].tabs[1].pr_number, None,
+            "tab B must be unaffected by tab A's result"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_a);
+        let _ = std::fs::remove_dir_all(&repo_b);
+    }
+
+    #[test]
+    fn apply_pr_statuses_clears_on_none_outcome() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].tabs[0].pr_number = Some(99);
+        state.workspaces[0].tabs[0].pr_merged = true;
+
+        let repo = temp_pr_test_dir("clear");
+        write_fake_repo_branch(&repo, "feature");
+        set_tab_cwd(&mut state, 0, 0, &repo);
+        let key = crate::workspace::git_status_cache_key(&repo).unwrap_or_else(|| repo.clone());
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_pr_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PrStatusResult {
+                cwd: key,
+                branch: "feature".into(),
+                outcome: crate::workspace::PrPollOutcome::None,
+            }],
+        );
+
+        assert!(changed);
+        assert_eq!(state.workspaces[0].tabs[0].pr_number, None);
+        assert!(!state.workspaces[0].tabs[0].pr_merged);
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn apply_pr_statuses_ignores_stale_branch() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].tabs[0].pr_number = Some(5);
+        state.workspaces[0].tabs[0].pr_merged = false;
+
+        let repo = temp_pr_test_dir("stale-branch");
+        write_fake_repo_branch(&repo, "current-branch");
+        set_tab_cwd(&mut state, 0, 0, &repo);
+        let key = crate::workspace::git_status_cache_key(&repo).unwrap_or_else(|| repo.clone());
+
+        // Result targets a branch this tab is no longer on (it switched
+        // between dispatch and apply) — must not overwrite tab 0's PR.
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_pr_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PrStatusResult {
+                cwd: key,
+                branch: "old-branch".into(),
+                outcome: crate::workspace::PrPollOutcome::Found {
+                    number: 42,
+                    merged: true,
+                },
+            }],
+        );
+
+        assert!(!changed);
+        assert_eq!(state.workspaces[0].tabs[0].pr_number, Some(5));
+        assert!(!state.workspaces[0].tabs[0].pr_merged);
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
