@@ -1529,6 +1529,7 @@ impl AppState {
             self.tab_scroll,
             self.tab_scroll_follow_active,
             self.mouse_capture,
+            self.auto_tab_naming,
         );
         self.tab_scroll = layout.scroll;
         self.view.tab_hit_areas = layout.tab_hit_areas;

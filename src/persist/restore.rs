@@ -1280,6 +1280,8 @@ mod tests {
                     zoomed: false,
                     focused: Some(10),
                     root_pane: Some(10),
+                    pr_number: None,
+                    pr_merged: false,
                 }],
                 active_tab: 0,
             }],
@@ -1360,6 +1362,8 @@ mod tests {
                         zoomed: false,
                         focused: Some(10),
                         root_pane: Some(10),
+                        pr_number: None,
+                        pr_merged: false,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1368,6 +1372,8 @@ mod tests {
                         zoomed: false,
                         focused: Some(11),
                         root_pane: Some(11),
+                        pr_number: None,
+                        pr_merged: false,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1376,6 +1382,8 @@ mod tests {
                         zoomed: false,
                         focused: Some(12),
                         root_pane: Some(12),
+                        pr_number: None,
+                        pr_merged: false,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1384,6 +1392,8 @@ mod tests {
                         zoomed: false,
                         focused: Some(13),
                         root_pane: Some(13),
+                        pr_number: None,
+                        pr_merged: false,
                     },
                 ],
                 active_tab: 3,
@@ -1448,6 +1458,8 @@ mod tests {
                 zoomed: false,
                 focused: Some(10),
                 root_pane: Some(10),
+                pr_number: None,
+                pr_merged: false,
             }],
             active_tab: 0,
         };

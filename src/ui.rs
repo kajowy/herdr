@@ -260,6 +260,7 @@ fn compute_view_internal(
                 app.tab_scroll,
                 app.tab_scroll_follow_active,
                 app.mouse_capture,
+                app.auto_tab_naming,
             )
         })
         .unwrap_or_default();

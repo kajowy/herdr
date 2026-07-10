@@ -1083,21 +1083,34 @@ impl Workspace {
     }
 
     /// Return the effective display label for the tab at `tab_idx`.
-    /// Manual custom_name always wins. Composes ticket/PR from the tab's own cached fields.
-    /// Falls back to the tab's display_name (custom_name or number).
-    pub(crate) fn effective_tab_label(&self, tab_idx: usize) -> String {
-        let has_ticket_label = self.tabs.get(tab_idx).and_then(|tab| {
-            if tab.custom_name.is_some() {
-                None
-            } else {
-                compose_tab_label(tab.cached_ticket.as_deref(), tab.pr_number, tab.pr_merged)
-            }
-        });
-        if let Some(label) = has_ticket_label {
-            return label;
+    /// Manual custom_name always wins. Composes ticket/PR from the tab's own cached fields
+    /// when `enabled` is true. Falls back to the tab's display_name (custom_name or number).
+    pub(crate) fn effective_tab_label(&self, tab_idx: usize, enabled: bool) -> String {
+        self.effective_tab_label_if_meaningful(tab_idx, enabled)
+            .unwrap_or_else(|| {
+                self.tab_display_name(tab_idx)
+                    .unwrap_or_else(|| (tab_idx + 1).to_string())
+            })
+    }
+
+    /// Like `effective_tab_label`, but `None` instead of falling back to the tab's
+    /// bare number — i.e. `Some` only when the tab carries a custom name or (when
+    /// `enabled` is true) a composed ticket/PR. Used by the grouped agent-panel
+    /// scope, where a bare number would be meaningless noise repeated on every
+    /// child row. Manual custom_name always wins regardless of `enabled`.
+    pub(crate) fn effective_tab_label_if_meaningful(
+        &self,
+        tab_idx: usize,
+        enabled: bool,
+    ) -> Option<String> {
+        let tab = &self.tabs[tab_idx];
+        if tab.custom_name.is_some() {
+            return self.tab_display_name(tab_idx);
         }
-        self.tab_display_name(tab_idx)
-            .unwrap_or_else(|| (tab_idx + 1).to_string())
+        if !enabled {
+            return None;
+        }
+        compose_tab_label(tab.cached_ticket.as_deref(), tab.pr_number, tab.pr_merged)
     }
 
     pub fn branch(&self) -> Option<String> {
@@ -1528,7 +1541,7 @@ mod tests {
         ws.tabs[0].cached_ticket = Some("TA-264".into());
         ws.tabs[0].pr_number = Some(301);
         ws.tabs[0].pr_merged = false;
-        assert_eq!(ws.effective_tab_label(0), "TA-264 #301");
+        assert_eq!(ws.effective_tab_label(0, true), "TA-264 #301");
     }
     #[test]
     fn effective_tab_label_non_active_tab_also_composes() {
@@ -1537,7 +1550,7 @@ mod tests {
         ws.active_tab = 0;
         ws.tabs[1].cached_ticket = Some("TA-264".into());
         ws.tabs[1].pr_number = Some(301);
-        assert_eq!(ws.effective_tab_label(1), "TA-264 #301");
+        assert_eq!(ws.effective_tab_label(1, true), "TA-264 #301");
     }
     #[test]
     fn effective_tab_label_each_tab_independent() {
@@ -1545,8 +1558,8 @@ mod tests {
         ws.test_add_tab(None);
         ws.tabs[0].cached_ticket = Some("TA-100".into());
         ws.tabs[1].cached_ticket = Some("TA-200".into());
-        assert_eq!(ws.effective_tab_label(0), "TA-100");
-        assert_eq!(ws.effective_tab_label(1), "TA-200");
+        assert_eq!(ws.effective_tab_label(0, true), "TA-100");
+        assert_eq!(ws.effective_tab_label(1, true), "TA-200");
     }
     #[test]
     fn effective_tab_label_custom_name_wins_even_if_active() {
@@ -1554,12 +1567,75 @@ mod tests {
         ws.tabs[0].cached_ticket = Some("TA-264".into());
         ws.tabs[0].pr_number = Some(301);
         ws.tabs[0].custom_name = Some("my-tab".into());
-        assert_eq!(ws.effective_tab_label(0), "my-tab");
+        assert_eq!(ws.effective_tab_label(0, true), "my-tab");
     }
     #[test]
     fn effective_tab_label_no_ticket_pr_returns_number() {
         let ws = Workspace::test_new("test");
-        assert_eq!(ws.effective_tab_label(0), "1");
+        assert_eq!(ws.effective_tab_label(0, true), "1");
+    }
+
+    #[test]
+    fn effective_tab_label_if_meaningful_none_for_plain_tab() {
+        let ws = Workspace::test_new("test");
+        assert_eq!(ws.effective_tab_label_if_meaningful(0, true), None);
+    }
+    #[test]
+    fn effective_tab_label_if_meaningful_some_for_ticket_tab() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].cached_ticket = Some("TA-270".into());
+        ws.tabs[0].pr_number = Some(348);
+        assert_eq!(
+            ws.effective_tab_label_if_meaningful(0, true),
+            Some("TA-270 #348".to_string())
+        );
+    }
+    #[test]
+    fn effective_tab_label_if_meaningful_some_for_custom_name() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].custom_name = Some("my-tab".into());
+        assert_eq!(
+            ws.effective_tab_label_if_meaningful(0, true),
+            Some("my-tab".to_string())
+        );
+    }
+
+    #[test]
+    fn effective_tab_label_disabled_suppresses_ticket_pr() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].cached_ticket = Some("TA-270".into());
+        ws.tabs[0].pr_number = Some(348);
+        assert_eq!(ws.effective_tab_label(0, false), "1");
+        assert_eq!(ws.effective_tab_label(0, true), "TA-270 #348");
+    }
+    #[test]
+    fn effective_tab_label_disabled_keeps_custom_name() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].cached_ticket = Some("TA-270".into());
+        ws.tabs[0].pr_number = Some(348);
+        ws.tabs[0].custom_name = Some("my-tab".into());
+        assert_eq!(ws.effective_tab_label(0, true), "my-tab");
+        assert_eq!(ws.effective_tab_label(0, false), "my-tab");
+    }
+    #[test]
+    fn effective_tab_label_if_meaningful_disabled_none_for_ticket_tab() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].cached_ticket = Some("TA-270".into());
+        ws.tabs[0].pr_number = Some(348);
+        assert_eq!(ws.effective_tab_label_if_meaningful(0, false), None);
+    }
+    #[test]
+    fn effective_tab_label_if_meaningful_disabled_keeps_custom_name() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].custom_name = Some("my-tab".into());
+        assert_eq!(
+            ws.effective_tab_label_if_meaningful(0, false),
+            Some("my-tab".to_string())
+        );
+        assert_eq!(
+            ws.effective_tab_label_if_meaningful(0, true),
+            Some("my-tab".to_string())
+        );
     }
 
     #[test]

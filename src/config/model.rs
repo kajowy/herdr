@@ -817,6 +817,8 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
+    /// Auto-name tabs from git branch ticket + PR (software-side). Default: true.
+    pub auto_tab_naming: bool,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
@@ -1011,6 +1013,7 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
+            auto_tab_naming: true,
             accent: "cyan".into(),
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
@@ -1280,6 +1283,19 @@ prompt_new_tab_name = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.prompt_new_tab_name);
+    }
+
+    #[test]
+    fn auto_tab_naming_defaults_on_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.ui.auto_tab_naming);
+
+        let toml = r#"
+[ui]
+auto_tab_naming = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.auto_tab_naming);
     }
 
     #[test]

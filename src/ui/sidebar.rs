@@ -130,7 +130,8 @@ fn agent_panel_entries_with_runtimes(
                     tab_idx: detail.tab_idx,
                     pane_id: detail.pane_id,
                     primary_label: workspace_label.clone(),
-                    primary_tab_label: multi_tab.then_some(ws.effective_tab_label(detail.tab_idx)),
+                    primary_tab_label: multi_tab
+                        .then_some(ws.effective_tab_label(detail.tab_idx, app.auto_tab_naming)),
                     agent_label: Some(detail.agent_label),
                     state: detail.state,
                     seen: detail.seen,
