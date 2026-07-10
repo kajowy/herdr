@@ -1839,6 +1839,36 @@ mod tests {
     }
 
     #[test]
+    fn tab_recompute_ticket_falls_back_to_branch() {
+        let base = std::env::temp_dir().join(format!(
+            "herdr-tab-branch-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("plain-dir");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join(".git/HEAD"),
+            "ref: refs/heads/feature/ta-312-foo\n",
+        )
+        .unwrap();
+
+        let mut ws = Workspace::test_new("ignored");
+        let root_pane = ws.tabs[0].root_pane;
+        let terminal_id = ws.tabs[0].terminal_id(root_pane).unwrap().clone();
+        let mut terminals = HashMap::new();
+        terminals.insert(terminal_id.clone(), TerminalState::new(terminal_id, root.clone()));
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        ws.tabs[0].recompute_ticket(&terminals, &terminal_runtimes);
+        assert_eq!(ws.tabs[0].cached_ticket, Some("TA-312".to_string()));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn moving_tab_keeps_active_identity_and_stable_tab_numbers() {
         let mut ws = Workspace::test_new("test");
         let moved_root = ws.tabs[0].root_pane;

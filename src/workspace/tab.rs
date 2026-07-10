@@ -558,10 +558,13 @@ impl Tab {
         terminals: &HashMap<TerminalId, TerminalState>,
         terminal_runtimes: &TerminalRuntimeRegistry,
     ) {
-        let worktree_name = self
-            .cwd_for_pane(self.root_pane, terminals, terminal_runtimes)
+        let cwd = self.cwd_for_pane(self.root_pane, terminals, terminal_runtimes);
+        let worktree_name = cwd
+            .as_deref()
             .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string));
-        self.cached_ticket = crate::workspace::derive_ticket(worktree_name.as_deref(), None);
+        let branch = cwd.as_deref().and_then(crate::workspace::git_branch);
+        self.cached_ticket =
+            crate::workspace::derive_ticket(worktree_name.as_deref(), branch.as_deref());
     }
 
     pub fn cwd_for_pane(
