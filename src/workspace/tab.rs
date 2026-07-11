@@ -199,7 +199,9 @@ impl Tab {
     }
 
     pub fn set_custom_name(&mut self, name: String) {
-        self.custom_name = Some(name);
+        // An empty/whitespace name clears the manual name, resetting the tab to
+        // auto-naming (ticket/PR or number) instead of pinning an empty label.
+        self.custom_name = (!name.trim().is_empty()).then_some(name);
     }
 
     pub fn split_focused(

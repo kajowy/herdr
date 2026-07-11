@@ -1585,6 +1585,18 @@ mod tests {
     }
 
     #[test]
+    fn set_custom_name_empty_clears_to_auto() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("TA-588".into());
+        assert_eq!(ws.tabs[0].custom_name.as_deref(), Some("TA-588"));
+        ws.tabs[0].set_custom_name("  ".into());
+        assert!(ws.tabs[0].custom_name.is_none());
+        ws.tabs[0].cached_ticket = Some("TA-588".into());
+        ws.tabs[0].pr_number = Some(42);
+        assert_eq!(ws.effective_tab_label(0, true), "TA-588 #42");
+    }
+
+    #[test]
     fn effective_tab_label_if_meaningful_none_for_plain_tab() {
         let ws = Workspace::test_new("test");
         assert_eq!(ws.effective_tab_label_if_meaningful(0, true), None);
