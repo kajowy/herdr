@@ -12,6 +12,15 @@ pub(crate) enum ClientConnectionMode {
     TerminalObserve { terminal_id: String },
 }
 
+/// Whether an attached client participates in PTY winsize negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizeRole {
+    /// Real terminals: the PTY winsize is the min-bbox over these seats.
+    Negotiating,
+    /// Web/stream viewers: they render at the terminal's size and never resize it.
+    Passive,
+}
+
 pub(crate) type RenderTarget = (
     u64,
     (u16, u16),
@@ -30,6 +39,8 @@ pub(crate) struct ClientConnection {
     pub(crate) keybindings: Option<Box<crate::config::LiveKeybindConfig>>,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: (u16, u16),
+    /// Whether this seat participates in PTY winsize negotiation.
+    pub(crate) size_role: SizeRole,
     /// Pixel size of one client terminal cell.
     pub(crate) cell_size: crate::kitty_graphics::HostCellSize,
     /// Last known host terminal default colors for this client.
@@ -102,6 +113,7 @@ impl ClientConnection {
             pending_terminal_attach,
             keybindings,
             terminal_size,
+            size_role: SizeRole::Negotiating,
             cell_size,
             host_terminal_appearance: host_terminal_theme
                 .background

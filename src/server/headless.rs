@@ -54,7 +54,7 @@ use crate::server::client_accept::{
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     events_include_interaction, latest_app_client, render_targets, terminal_stream_client_ids,
-    ClientConnection, ClientConnectionMode,
+    ClientConnection, ClientConnectionMode, SizeRole,
 };
 use crate::server::keybindings::{app_keybindings, apply_keybindings};
 use crate::server::notifications::{
@@ -214,6 +214,8 @@ pub struct HeadlessServer {
     server_config_diagnostic_without_keybindings: Option<String>,
     /// Attached seat client ids per terminal id string.
     terminal_attach_clients: HashMap<String, HashSet<u64>>,
+    /// Negotiated attach winsize per terminal id string, used by passive seats.
+    terminal_attach_sizes: HashMap<String, (u16, u16)>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
     /// Shared pane runtime size derived from the foreground client,
@@ -406,6 +408,7 @@ impl HeadlessServer {
             server_config_diagnostic,
             server_config_diagnostic_without_keybindings,
             terminal_attach_clients: HashMap::new(),
+            terminal_attach_sizes: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
@@ -1251,6 +1254,7 @@ impl HeadlessServer {
                     };
                 if seats_left == 0 {
                     self.terminal_attach_clients.remove(&terminal_id);
+                    self.terminal_attach_sizes.remove(&terminal_id);
                     if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
                         self.app
                             .state
@@ -1282,7 +1286,14 @@ impl HeadlessServer {
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: u64) {
         let needs_shared_resize = self.client_removal_needs_shared_resize(client_id);
+        let attached_terminal_id = match self.clients.get(&client_id).map(|client| &client.mode) {
+            Some(ClientConnectionMode::TerminalAttach { terminal_id }) => Some(terminal_id.clone()),
+            _ => None,
+        };
         let foreground_changed = self.remove_client(client_id);
+        if let Some(terminal_id) = attached_terminal_id {
+            self.apply_terminal_attach_size(&terminal_id);
+        }
         if needs_shared_resize || foreground_changed {
             self.resize_shared_runtime_to_effective_size();
         }
@@ -1416,6 +1427,91 @@ impl HeadlessServer {
             .resolve_terminal_target(target)
             .ok()
             .map(|resolved| resolved.terminal_id)
+    }
+
+    /// Min-bbox (min cols, min rows) over the negotiating seats attached to
+    /// `terminal_id`. `None` when no negotiating seat is attached.
+    fn negotiated_attach_size(&self, terminal_id: &str) -> Option<(u16, u16)> {
+        self.terminal_attach_clients
+            .get(terminal_id)?
+            .iter()
+            .filter_map(|client_id| self.clients.get(client_id))
+            .filter(|client| client.size_role == SizeRole::Negotiating)
+            .map(|client| client.terminal_size)
+            .reduce(|(min_cols, min_rows), (cols, rows)| (min_cols.min(cols), min_rows.min(rows)))
+    }
+
+    /// Recomputes the negotiated winsize for `terminal_id`, resizes the PTY
+    /// when a negotiating seat is attached, and re-points every passive seat
+    /// of that terminal to the resulting size.
+    fn apply_terminal_attach_size(&mut self, terminal_id: &str) {
+        let size = self.negotiated_attach_size(terminal_id);
+        let resolved_size = if let Some(size) = size {
+            self.terminal_attach_sizes
+                .insert(terminal_id.to_owned(), size);
+            let cell_size = self
+                .terminal_attach_clients
+                .get(terminal_id)
+                .and_then(|seats| {
+                    seats
+                        .iter()
+                        .filter_map(|client_id| self.clients.get(client_id))
+                        .filter(|client| client.size_role == SizeRole::Negotiating)
+                        .min_by_key(|client| client.terminal_size.0)
+                        .map(|client| client.cell_size)
+                })
+                .unwrap_or_default();
+            if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
+                let (cols, rows) = size;
+                runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+            }
+            Some(size)
+        } else {
+            if !self.terminal_attach_sizes.contains_key(terminal_id) {
+                if let Some(seed) =
+                    self.terminal_attach_clients
+                        .get(terminal_id)
+                        .and_then(|seats| {
+                            seats
+                                .iter()
+                                .filter_map(|client_id| self.clients.get(client_id))
+                                .find(|client| client.size_role == SizeRole::Passive)
+                                .map(|client| client.terminal_size)
+                        })
+                {
+                    self.terminal_attach_sizes
+                        .insert(terminal_id.to_owned(), seed);
+                }
+            }
+            self.terminal_attach_sizes.get(terminal_id).copied()
+        };
+
+        let Some(resolved_size) = resolved_size else {
+            return;
+        };
+        let passive_ids: Vec<u64> = self
+            .terminal_attach_clients
+            .get(terminal_id)
+            .map(|seats| {
+                seats
+                    .iter()
+                    .copied()
+                    .filter(|client_id| {
+                        self.clients
+                            .get(client_id)
+                            .is_some_and(|client| client.size_role == SizeRole::Passive)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for client_id in passive_ids {
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                if client.terminal_size != resolved_size {
+                    client.terminal_size = resolved_size;
+                    client.request_full_redraw();
+                }
+            }
+        }
     }
 
     fn write_client_clipboard_image(
@@ -2372,7 +2468,6 @@ impl HeadlessServer {
             return false;
         };
         let (cols, rows) = client.terminal_size;
-        let cell_size = client.cell_size;
         client.mode = ClientConnectionMode::TerminalAttach {
             terminal_id: terminal_id.clone(),
         };
@@ -2395,9 +2490,7 @@ impl HeadlessServer {
             .insert(real_terminal_id.clone());
         self.app
             .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
-        if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
-            runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
-        }
+        self.apply_terminal_attach_size(&terminal_id);
         true
     }
 
@@ -2666,6 +2759,17 @@ impl HeadlessServer {
                     client_id,
                     cols, rows, cell_width_px, cell_height_px, "client resize"
                 );
+                let is_passive_attach_seat = matches!(
+                    self.clients.get(&client_id),
+                    Some(ClientConnection {
+                        mode: ClientConnectionMode::TerminalAttach { .. },
+                        size_role: SizeRole::Passive,
+                        ..
+                    })
+                );
+                if is_passive_attach_seat {
+                    return false;
+                }
                 let direct_terminal_id = if let Some(ClientConnection {
                     mode: ClientConnectionMode::TerminalAttach { terminal_id },
                     terminal_size,
@@ -2685,9 +2789,7 @@ impl HeadlessServer {
                     None
                 };
                 if let Some(terminal_id) = direct_terminal_id {
-                    if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
-                        runtime.resize(rows, cols, cell_width_px, cell_height_px);
-                    }
+                    self.apply_terminal_attach_size(&terminal_id);
                     return true;
                 }
                 if let Some(ClientConnection {
@@ -4219,6 +4321,7 @@ mod tests {
             server_config_diagnostic: None,
             server_config_diagnostic_without_keybindings: None,
             terminal_attach_clients: HashMap::new(),
+            terminal_attach_sizes: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
@@ -4816,7 +4919,7 @@ next_tab = ""
                 );
             }
 
-            assert!(server.terminal_attach_owners.is_empty());
+            assert!(server.terminal_attach_clients.is_empty());
             assert!(!server
                 .app
                 .state
@@ -4876,8 +4979,11 @@ next_tab = ""
                         if attached == &terminal_id_string
                 ));
                 assert_eq!(
-                    server.terminal_attach_owners.get(&terminal_id_string),
-                    Some(&7)
+                    server
+                        .terminal_attach_clients
+                        .get(&terminal_id_string)
+                        .map(|seats| seats.iter().copied().collect::<Vec<_>>()),
+                    Some(vec![7])
                 );
                 assert!(server
                     .app
@@ -4889,7 +4995,7 @@ next_tab = ""
     }
 
     #[test]
-    fn terminal_control_rejects_second_controller_without_takeover() {
+    fn terminal_control_allows_second_seat_without_takeover() {
         with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
             connect_pending_terminal_client(server, 7);
             assert!(
@@ -4901,8 +5007,11 @@ next_tab = ""
             );
 
             connect_pending_terminal_client(server, 8);
+            // Multi-seat: a second controller without takeover joins as another
+            // seat rather than being rejected (see "allow multiple seats per
+            // attached terminal"). Takeover is what evicts an existing seat.
             assert!(
-                !server.handle_server_event(ServerEvent::ClientControlTerminal {
+                server.handle_server_event(ServerEvent::ClientControlTerminal {
                     client_id: 8,
                     target: terminal_id_string.clone(),
                     takeover: false,
@@ -4910,10 +5019,14 @@ next_tab = ""
             );
 
             assert!(server.clients.contains_key(&7));
-            assert!(!server.clients.contains_key(&8));
+            assert!(server.clients.contains_key(&8));
             assert_eq!(
-                server.terminal_attach_owners.get(&terminal_id_string),
-                Some(&7)
+                server.terminal_attach_clients.get(&terminal_id_string).map(|seats| {
+                    let mut ids = seats.iter().copied().collect::<Vec<_>>();
+                    ids.sort_unstable();
+                    ids
+                }),
+                Some(vec![7, 8])
             );
         });
     }
@@ -4942,8 +5055,11 @@ next_tab = ""
             assert!(!server.clients.contains_key(&7));
             assert!(server.clients.contains_key(&8));
             assert_eq!(
-                server.terminal_attach_owners.get(&terminal_id_string),
-                Some(&8)
+                server
+                    .terminal_attach_clients
+                    .get(&terminal_id_string)
+                    .map(|seats| seats.iter().copied().collect::<Vec<_>>()),
+                Some(vec![8])
             );
         });
     }
@@ -4969,8 +5085,11 @@ next_tab = ""
             );
 
             assert_eq!(
-                server.terminal_attach_owners.get(&terminal_id_string),
-                Some(&7)
+                server
+                    .terminal_attach_clients
+                    .get(&terminal_id_string)
+                    .map(|seats| seats.iter().copied().collect::<Vec<_>>()),
+                Some(vec![7])
             );
             assert!(matches!(
                 server.clients.get(&8).map(|client| &client.mode),
@@ -5000,7 +5119,7 @@ next_tab = ""
 
             assert!(!server.clients.contains_key(&7));
             assert!(!server
-                .terminal_attach_owners
+                .terminal_attach_clients
                 .contains_key(&terminal_id_string));
             let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
             assert_eq!(reason, Some("detached".to_owned()));
@@ -5026,7 +5145,7 @@ next_tab = ""
             );
 
             assert!(!server.clients.contains_key(&7));
-            assert!(server.terminal_attach_owners.is_empty());
+            assert!(server.terminal_attach_clients.is_empty());
             assert!(!server
                 .app
                 .state
@@ -5047,8 +5166,11 @@ next_tab = ""
                 })
             );
             assert_eq!(
-                server.terminal_attach_owners.get(&terminal_id_string),
-                Some(&7)
+                server
+                    .terminal_attach_clients
+                    .get(&terminal_id_string)
+                    .map(|seats| seats.iter().copied().collect::<Vec<_>>()),
+                Some(vec![7])
             );
             assert!(server
                 .app
@@ -5064,7 +5186,7 @@ next_tab = ""
             );
 
             assert!(!server.clients.contains_key(&7));
-            assert!(server.terminal_attach_owners.is_empty());
+            assert!(server.terminal_attach_clients.is_empty());
             assert!(!server
                 .app
                 .state
@@ -5310,6 +5432,69 @@ next_tab = ""
         server.handle_server_event(ServerEvent::ClientDetach { client_id: 8 });
         assert!(!server.terminal_attach_clients.contains_key(&terminal_id));
         assert!(server.app.state.direct_attach_resize_locks.is_empty());
+    }
+
+    #[test]
+    fn negotiating_seats_use_min_bbox() {
+        let (mut server, terminal_id) = attach_test_server();
+        connect_attach_client(&mut server, 7, 120, 40, &terminal_id, false);
+        assert_eq!(server.negotiated_attach_size(&terminal_id), Some((120, 40)));
+
+        connect_attach_client(&mut server, 8, 100, 50, &terminal_id, false);
+        assert_eq!(
+            server.negotiated_attach_size(&terminal_id),
+            Some((100, 40)),
+            "min cols x min rows over both seats"
+        );
+
+        server.handle_server_event(ServerEvent::ClientDetach { client_id: 8 });
+        assert_eq!(
+            server.negotiated_attach_size(&terminal_id),
+            Some((120, 40)),
+            "detach recomputes from the remaining seat"
+        );
+    }
+
+    #[test]
+    fn passive_seat_never_changes_negotiated_size() {
+        let (mut server, terminal_id) = attach_test_server();
+        connect_attach_client(&mut server, 7, 120, 40, &terminal_id, false);
+        connect_attach_client(&mut server, 8, 40, 10, &terminal_id, false);
+        server.clients.get_mut(&8).expect("seat").size_role = SizeRole::Passive;
+        server.apply_terminal_attach_size(&terminal_id);
+
+        assert_eq!(
+            server.negotiated_attach_size(&terminal_id),
+            Some((120, 40)),
+            "passive seat is excluded from the bbox"
+        );
+        assert_eq!(
+            server.clients.get(&8).expect("seat").terminal_size,
+            (120, 40),
+            "passive seat renders at the terminal size"
+        );
+    }
+
+    #[test]
+    fn passive_resize_request_is_ignored() {
+        let (mut server, terminal_id) = attach_test_server();
+        connect_attach_client(&mut server, 7, 120, 40, &terminal_id, false);
+        connect_attach_client(&mut server, 8, 120, 40, &terminal_id, false);
+        server.clients.get_mut(&8).expect("seat").size_role = SizeRole::Passive;
+
+        server.handle_server_event(ServerEvent::ClientResize {
+            client_id: 8,
+            cols: 30,
+            rows: 8,
+            cell_width_px: 0,
+            cell_height_px: 0,
+        });
+
+        assert_eq!(server.negotiated_attach_size(&terminal_id), Some((120, 40)));
+        assert_eq!(
+            server.clients.get(&8).expect("seat").terminal_size,
+            (120, 40)
+        );
     }
 
     #[test]
