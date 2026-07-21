@@ -15,6 +15,7 @@
 //!   and pane spawn failure during restore
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,8 +212,8 @@ pub struct HeadlessServer {
     server_config_diagnostic: Option<String>,
     /// Server config warning with keybinding diagnostics removed for local-keybinding clients.
     server_config_diagnostic_without_keybindings: Option<String>,
-    /// Writable direct attach owner per terminal id string.
-    terminal_attach_owners: HashMap<String, u64>,
+    /// Attached seat client ids per terminal id string.
+    terminal_attach_clients: HashMap<String, HashSet<u64>>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
     /// Shared pane runtime size derived from the foreground client,
@@ -404,7 +405,7 @@ impl HeadlessServer {
             server_keybindings,
             server_config_diagnostic,
             server_config_diagnostic_without_keybindings,
-            terminal_attach_owners: HashMap::new(),
+            terminal_attach_clients: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
@@ -1241,12 +1242,21 @@ impl HeadlessServer {
         if let Some(removed) = removed {
             crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
             if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
-                self.terminal_attach_owners.remove(&terminal_id);
-                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
-                    self.app
-                        .state
-                        .direct_attach_resize_locks
-                        .remove(&terminal_id);
+                let seats_left =
+                    if let Some(seats) = self.terminal_attach_clients.get_mut(&terminal_id) {
+                        seats.remove(&client_id);
+                        seats.len()
+                    } else {
+                        0
+                    };
+                if seats_left == 0 {
+                    self.terminal_attach_clients.remove(&terminal_id);
+                    if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
+                        self.app
+                            .state
+                            .direct_attach_resize_locks
+                            .remove(&terminal_id);
+                    }
                 }
             }
         }
@@ -2334,27 +2344,26 @@ impl HeadlessServer {
             return false;
         };
 
-        if let Some(existing_owner) = self.terminal_attach_owners.get(&terminal_id).copied() {
-            if existing_owner != client_id && !takeover {
+        if takeover {
+            let others: Vec<u64> = self
+                .terminal_attach_clients
+                .get(&terminal_id)
+                .map(|seats| {
+                    seats
+                        .iter()
+                        .copied()
+                        .filter(|id| *id != client_id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for other in others {
                 self.send_to_client(
-                    client_id,
-                    ServerMessage::ServerShutdown {
-                        reason: Some(format!(
-                            "terminal attach failed: terminal {terminal_id} already has an attached client; retry with --takeover"
-                        )),
-                    },
-                );
-                self.remove_client_and_resize_if_needed(client_id);
-                return false;
-            }
-            if existing_owner != client_id {
-                self.send_to_client(
-                    existing_owner,
+                    other,
                     ServerMessage::ServerShutdown {
                         reason: Some("terminal attach taken over".to_owned()),
                     },
                 );
-                self.remove_client_and_resize_if_needed(existing_owner);
+                self.remove_client_and_resize_if_needed(other);
             }
         }
 
@@ -2376,8 +2385,10 @@ impl HeadlessServer {
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
-        self.terminal_attach_owners
-            .insert(terminal_id.clone(), client_id);
+        self.terminal_attach_clients
+            .entry(terminal_id.clone())
+            .or_default()
+            .insert(client_id);
         self.app
             .state
             .direct_attach_resize_locks
@@ -4207,7 +4218,7 @@ mod tests {
             server_keybindings,
             server_config_diagnostic: None,
             server_config_diagnostic_without_keybindings: None,
-            terminal_attach_owners: HashMap::new(),
+            terminal_attach_clients: HashMap::new(),
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
@@ -5171,6 +5182,180 @@ next_tab = ""
         app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::SemanticFrame);
     }
 
+    /// Builds a server with one test workspace and returns its terminal id string.
+    fn attach_test_server() -> (HeadlessServer, String) {
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("attached");
+        let pane_id = workspace.tabs[0].root_pane;
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        let terminal_id = server.app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("pane")
+            .attached_terminal_id
+            .to_string();
+        (server, terminal_id)
+    }
+
+    /// Connects a binary terminal-attach client and attaches it to `terminal_id`.
+    fn connect_attach_client(
+        server: &mut HeadlessServer,
+        client_id: u64,
+        cols: u16,
+        rows: u16,
+        terminal_id: &str,
+        takeover: bool,
+    ) -> (
+        std::sync::mpsc::Receiver<Vec<u8>>,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let (writer, control_rx, render_rx) = test_client_writer();
+        server.handle_server_event(ServerEvent::ClientConnected {
+            client_id,
+            cols,
+            rows,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            render_encoding: RenderEncoding::TerminalAnsi,
+            keybindings: None,
+            direct_attach_requested: true,
+            writer,
+        });
+        server.handle_server_event(ServerEvent::ClientAttachTerminal {
+            client_id,
+            terminal_id: terminal_id.to_owned(),
+            takeover,
+        });
+        (control_rx, render_rx)
+    }
+
+    #[test]
+    fn plain_attach_admits_a_second_seat() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (_a_control, _a_render) =
+            connect_attach_client(&mut server, 7, 80, 24, &terminal_id, false);
+        let (b_control, _b_render) =
+            connect_attach_client(&mut server, 8, 80, 24, &terminal_id, false);
+
+        let seats = server
+            .terminal_attach_clients
+            .get(&terminal_id)
+            .expect("seat set");
+        assert_eq!(seats.len(), 2, "both seats attached: {seats:?}");
+        assert!(seats.contains(&7) && seats.contains(&8));
+        assert!(server.clients.contains_key(&7), "first seat not kicked");
+        assert!(
+            b_control.try_recv().is_err(),
+            "second seat must not be rejected"
+        );
+    }
+
+    #[test]
+    fn takeover_kicks_every_other_seat() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (a_control, _a_render) =
+            connect_attach_client(&mut server, 7, 80, 24, &terminal_id, false);
+        let (b_control, _b_render) =
+            connect_attach_client(&mut server, 8, 80, 24, &terminal_id, false);
+        let (_c_control, _c_render) =
+            connect_attach_client(&mut server, 9, 80, 24, &terminal_id, true);
+
+        assert_eq!(
+            server
+                .terminal_attach_clients
+                .get(&terminal_id)
+                .expect("seat set")
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![9]
+        );
+        assert!(!server.clients.contains_key(&7));
+        assert!(!server.clients.contains_key(&8));
+        assert_eq!(
+            read_server_shutdown_reason(a_control.recv().expect("kick a")),
+            Some("terminal attach taken over".to_owned())
+        );
+        assert_eq!(
+            read_server_shutdown_reason(b_control.recv().expect("kick b")),
+            Some("terminal attach taken over".to_owned())
+        );
+    }
+
+    #[test]
+    fn detaching_one_seat_keeps_the_others() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (_a_control, _a_render) =
+            connect_attach_client(&mut server, 7, 80, 24, &terminal_id, false);
+        let (_b_control, _b_render) =
+            connect_attach_client(&mut server, 8, 80, 24, &terminal_id, false);
+
+        server.handle_server_event(ServerEvent::ClientDetach { client_id: 7 });
+
+        let seats = server
+            .terminal_attach_clients
+            .get(&terminal_id)
+            .expect("seat set");
+        assert_eq!(seats.iter().copied().collect::<Vec<_>>(), vec![8]);
+        assert!(server.clients.contains_key(&8));
+        assert!(
+            server
+                .app
+                .state
+                .direct_attach_resize_locks
+                .contains(&server.terminal_id_by_string(&terminal_id).expect("id")),
+            "resize lock must stay while a seat remains"
+        );
+
+        server.handle_server_event(ServerEvent::ClientDetach { client_id: 8 });
+        assert!(!server.terminal_attach_clients.contains_key(&terminal_id));
+        assert!(server.app.state.direct_attach_resize_locks.is_empty());
+    }
+
+    #[test]
+    fn input_from_every_seat_reaches_the_runtime() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _runtime_guard = rt.enter();
+
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("attached");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        server.app.state.active = Some(0);
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 8);
+        server
+            .app
+            .terminal_runtimes
+            .insert(terminal_id.clone(), runtime);
+        let terminal_id = terminal_id.to_string();
+
+        let (_a_control, _a_render) =
+            connect_attach_client(&mut server, 7, 80, 24, &terminal_id, false);
+        let (_b_control, _b_render) =
+            connect_attach_client(&mut server, 8, 80, 24, &terminal_id, false);
+
+        server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 7,
+            data: b"a".to_vec(),
+        });
+        server.handle_server_event(ServerEvent::ClientInput {
+            client_id: 8,
+            data: b"b".to_vec(),
+        });
+
+        assert_eq!(input_rx.try_recv().expect("seat a input"), Bytes::from("a"));
+        assert_eq!(input_rx.try_recv().expect("seat b input"), Bytes::from("b"));
+
+        drop(_runtime_guard);
+        rt.shutdown_timeout(Duration::from_millis(100));
+    }
+
     #[test]
     fn terminal_attach_client_exits_when_attached_pane_dies() {
         let mut server = test_headless_server();
@@ -5203,12 +5388,18 @@ next_tab = ""
                 takeover: false,
             })
         );
-        assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&7));
+        assert_eq!(
+            server
+                .terminal_attach_clients
+                .get(&terminal_id)
+                .map(|seats| seats.iter().copied().collect::<Vec<_>>()),
+            Some(vec![7])
+        );
 
         assert!(server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id }));
 
         assert!(!server.clients.contains_key(&7));
-        assert!(!server.terminal_attach_owners.contains_key(&terminal_id));
+        assert!(!server.terminal_attach_clients.contains_key(&terminal_id));
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some(format!("terminal {terminal_id} exited")));
     }
