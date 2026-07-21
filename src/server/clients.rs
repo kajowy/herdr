@@ -2,8 +2,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::protocol::RenderEncoding;
+use crate::server::attach_stream::StreamMode;
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
+
+/// Wire encoding used to frame `ServerMessage` values for a client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientWire {
+    /// Length-prefixed bincode frames, the native thin-client protocol.
+    Bincode,
+    /// Newline-terminated JSON events for the `terminal.attach_stream` API.
+    Json,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClientConnectionMode {
@@ -69,6 +79,12 @@ pub(crate) struct ClientConnection {
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
+    /// Wire encoding used to frame outgoing `ServerMessage` values.
+    pub(crate) wire: ClientWire,
+    /// Whether an attach-stream seat may send input, or observes only.
+    pub(crate) input_mode: StreamMode,
+    /// Whether the one-shot `input_not_allowed` error has already been sent.
+    pub(crate) input_rejected_notified: bool,
 }
 
 impl ClientConnection {
@@ -130,6 +146,9 @@ impl ClientConnection {
             host_mouse_capture_active: None,
             staged_clipboard_files: Vec::new(),
             writer,
+            wire: ClientWire::Bincode,
+            input_mode: StreamMode::default(),
+            input_rejected_notified: false,
         }
     }
 

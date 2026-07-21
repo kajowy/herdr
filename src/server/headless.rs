@@ -44,17 +44,20 @@ use crate::ipc::{
     SocketFileIdentity,
 };
 use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage, MAX_FRAME_SIZE,
-    MAX_GRAPHICS_FRAME_SIZE,
+    self, AttachScrollDirection, AttachScrollSource, FrameData, RenderEncoding, ServerMessage,
+    MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE,
 };
+use crate::server::attach_stream::StreamMode;
 #[cfg(unix)]
 use crate::server::client_accept::{
     accept_pending_client_connections, reject_pending_client_connections,
 };
 use crate::server::client_transport::ServerEvent;
+#[cfg(unix)]
+use crate::server::client_transport::{clamp_terminal_size, AttachStreamAccepted};
 use crate::server::clients::{
     events_include_interaction, latest_app_client, render_targets, terminal_stream_client_ids,
-    ClientConnection, ClientConnectionMode, SizeRole,
+    ClientConnection, ClientConnectionMode, ClientWire, SizeRole,
 };
 use crate::server::keybindings::{app_keybindings, apply_keybindings};
 use crate::server::notifications::{
@@ -65,8 +68,6 @@ use crate::server::socket_paths::{
 };
 use crate::server::terminal_attach::paste_payload_for_runtime;
 
-#[cfg(test)]
-use crate::protocol::RenderEncoding;
 #[cfg(test)]
 use crate::server::client_transport::ClientWriter;
 #[cfg(test)]
@@ -1313,7 +1314,8 @@ impl HeadlessServer {
         let Some(writer) = writer else {
             return;
         };
-        let Ok(serialized) = Self::frame_server_message(&ServerMessage::Graphics { bytes }) else {
+        let Some(serialized) = self.frame_for_client(client_id, &ServerMessage::Graphics { bytes })
+        else {
             return;
         };
         let _ = writer.control.send(serialized);
@@ -1505,11 +1507,19 @@ impl HeadlessServer {
             })
             .unwrap_or_default();
         for client_id in passive_ids {
-            if let Some(client) = self.clients.get_mut(&client_id) {
-                if client.terminal_size != resolved_size {
-                    client.terminal_size = resolved_size;
-                    client.request_full_redraw();
+            let resized_wire = self.clients.get_mut(&client_id).and_then(|client| {
+                if client.terminal_size == resolved_size {
+                    return None;
                 }
+                client.terminal_size = resolved_size;
+                client.request_full_redraw();
+                Some(client.wire)
+            });
+            if resized_wire == Some(ClientWire::Json) {
+                self.send_stream_event(
+                    client_id,
+                    crate::server::attach_stream::encode_resize(resolved_size.0, resolved_size.1),
+                );
             }
         }
     }
@@ -2290,24 +2300,68 @@ impl HeadlessServer {
         Ok(framed)
     }
 
+    /// Encodes `msg` for `client_id`'s wire: a JSON event line for
+    /// `ClientWire::Json`, a length-prefixed bincode frame otherwise.
+    /// Returns `None` when the message has no JSON mapping, or the bincode
+    /// frame would be oversized.
+    fn frame_for_client(&self, client_id: u64, msg: &ServerMessage) -> Option<Vec<u8>> {
+        match self.clients.get(&client_id).map(|client| client.wire) {
+            Some(ClientWire::Json) => crate::server::attach_stream::encode_server_message(msg),
+            _ => Self::frame_server_message(msg).ok(),
+        }
+    }
+
+    /// Pushes a raw JSON attach-stream event down `client_id`'s control
+    /// channel. Marks the client broken on send failure, like `send_to_client`.
+    fn send_stream_event(&mut self, client_id: u64, bytes: Vec<u8>) {
+        let Some(writer) = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.writer.as_ref().cloned())
+        else {
+            return;
+        };
+        if writer.control.send(bytes).is_err() {
+            debug!(
+                client_id,
+                "client writer channel closed during stream event send"
+            );
+            self.remove_client_and_resize_if_needed(client_id);
+        }
+    }
+
+    /// Sends the one-shot `input_not_allowed` error to an attach-stream seat.
+    /// A no-op after the first call for a given client.
+    fn notify_input_rejected_once(&mut self, client_id: u64) {
+        let should_notify = self
+            .clients
+            .get_mut(&client_id)
+            .is_some_and(|client| !std::mem::replace(&mut client.input_rejected_notified, true));
+        if should_notify {
+            self.send_stream_event(
+                client_id,
+                crate::server::attach_stream::encode_error(
+                    "input_not_allowed",
+                    "attach stream seat is view-only",
+                ),
+            );
+        }
+    }
+
     /// Sends a message to all connected clients.
     /// Broken connections are tracked and cleaned up.
     fn send_to_all_clients(&mut self, msg: ServerMessage) {
-        let serialized = match Self::frame_server_message(&msg) {
-            Ok(framed) => framed,
-            Err(err) => {
-                warn!(err = %err, "failed to serialize message for clients");
-                return;
-            }
-        };
-
         let mut broken_clients: Vec<u64> = Vec::new();
-        for (&client_id, client) in &mut self.clients {
-            if let Some(writer) = &client.writer {
-                if writer.control.send(serialized.clone()).is_err() {
-                    debug!(client_id, "client writer channel closed during broadcast");
-                    broken_clients.push(client_id);
-                }
+        for (&client_id, client) in &self.clients {
+            let Some(writer) = &client.writer else {
+                continue;
+            };
+            let Some(serialized) = self.frame_for_client(client_id, &msg) else {
+                continue;
+            };
+            if writer.control.send(serialized).is_err() {
+                debug!(client_id, "client writer channel closed during broadcast");
+                broken_clients.push(client_id);
             }
         }
 
@@ -2328,29 +2382,25 @@ impl HeadlessServer {
     /// Sends a message to a specific client. Returns false if the client
     /// was not found or the send failed (client removed).
     fn send_to_client(&mut self, client_id: u64, msg: ServerMessage) -> bool {
-        let serialized = match Self::frame_server_message(&msg) {
-            Ok(framed) => framed,
-            Err(err) => {
-                warn!(client_id, err = %err, "failed to serialize message for client");
-                return false;
-            }
+        let Some(client) = self.clients.get(&client_id) else {
+            return false;
         };
-
-        if let Some(client) = self.clients.get(&client_id) {
-            if let Some(writer) = &client.writer {
-                if writer.control.send(serialized).is_err() {
-                    debug!(
-                        client_id,
-                        "client writer channel closed during targeted send"
-                    );
-                    self.remove_client_and_resize_if_needed(client_id);
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
+        let Some(writer) = client.writer.as_ref().cloned() else {
+            return true;
+        };
+        let Some(serialized) = self.frame_for_client(client_id, &msg) else {
+            warn!(client_id, "failed to encode message for client wire");
+            return false;
+        };
+        if writer.control.send(serialized).is_err() {
+            debug!(
+                client_id,
+                "client writer channel closed during targeted send"
+            );
+            self.remove_client_and_resize_if_needed(client_id);
+            return false;
         }
+        true
     }
 
     fn shutdown_terminal_stream_clients(&mut self, terminal_id: &str, reason: String) {
@@ -2667,6 +2717,18 @@ impl HeadlessServer {
                     return false;
                 }
                 debug!(client_id, len = data.len(), "client input received");
+                let view_only_attach_seat = matches!(
+                    self.clients.get(&client_id),
+                    Some(ClientConnection {
+                        mode: ClientConnectionMode::TerminalAttach { .. },
+                        input_mode: StreamMode::View,
+                        ..
+                    })
+                );
+                if view_only_attach_seat {
+                    self.notify_input_rejected_once(client_id);
+                    return false;
+                }
                 if let Some(ClientConnection {
                     mode: ClientConnectionMode::TerminalAttach { terminal_id },
                     ..
@@ -2768,6 +2830,16 @@ impl HeadlessServer {
                     })
                 );
                 if is_passive_attach_seat {
+                    let json_seat = matches!(
+                        self.clients.get(&client_id),
+                        Some(ClientConnection {
+                            wire: ClientWire::Json,
+                            ..
+                        })
+                    );
+                    if json_seat {
+                        self.notify_input_rejected_once(client_id);
+                    }
                     return false;
                 }
                 let direct_terminal_id = if let Some(ClientConnection {
@@ -2844,6 +2916,71 @@ impl HeadlessServer {
             ServerEvent::QuitSignal => {
                 // The quit check at the top of the loop handles this.
                 // No render needed — the next iteration will initiate shutdown.
+                false
+            }
+            #[cfg(unix)]
+            ServerEvent::AttachStreamConnected {
+                terminal_id,
+                mode,
+                size_role,
+                cols,
+                rows,
+                writer,
+                respond_to,
+            } => {
+                let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) else {
+                    let _ = respond_to.send(Err("terminal_not_found".to_owned()));
+                    return false;
+                };
+
+                let client_id = self.next_client_id;
+                self.next_client_id = self.next_client_id.saturating_add(1);
+                let last_activity = self.allocate_activity_stamp();
+                let mut client = ClientConnection::new_with_mode(
+                    ClientConnectionMode::TerminalAttach {
+                        terminal_id: terminal_id.clone(),
+                    },
+                    None,
+                    clamp_terminal_size(cols, rows),
+                    crate::kitty_graphics::HostCellSize::default(),
+                    crate::terminal_theme::TerminalTheme::default(),
+                    None,
+                    last_activity,
+                    RenderEncoding::TerminalAnsi,
+                    false,
+                    Some(writer),
+                );
+                client.wire = ClientWire::Json;
+                client.size_role = size_role;
+                client.input_mode = mode;
+                client.request_full_redraw();
+                self.clients.insert(client_id, client);
+
+                self.terminal_attach_clients
+                    .entry(terminal_id.clone())
+                    .or_default()
+                    .insert(client_id);
+                self.app
+                    .state
+                    .direct_attach_resize_locks
+                    .insert(real_terminal_id);
+                self.apply_terminal_attach_size(&terminal_id);
+
+                let (cols, rows) = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.terminal_size)
+                    .unwrap_or_else(|| clamp_terminal_size(cols, rows));
+                let _ = respond_to.send(Ok(AttachStreamAccepted {
+                    client_id,
+                    cols,
+                    rows,
+                }));
+                true
+            }
+            #[cfg(windows)]
+            ServerEvent::AttachStreamConnected { respond_to, .. } => {
+                let _ = respond_to.send(Err("unsupported".to_owned()));
                 false
             }
         }
@@ -3540,6 +3677,7 @@ impl HeadlessServer {
             let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
+            let wire = client.wire;
             let mut next_graphics_cache = client.graphics_cache.clone();
             let graphics_surface_reset_pending = client.graphics_surface_reset_pending;
             if is_app_client && self.app.state.kitty_graphics_enabled && cell_size.is_known() {
@@ -3593,72 +3731,98 @@ impl HeadlessServer {
             crate::render_prof::duration_since("full_render.prepare_frame", prepare_started);
 
             let serialize_started = crate::render_prof::timer();
-            let serialized = match Self::frame_server_message_with_max(
-                prepared.message(),
-                max_frame_size,
-            ) {
-                Ok(framed) => {
+            let serialized = if wire == ClientWire::Json {
+                // JSON attach-stream seats never carry graphics (cleared above
+                // for non-app clients), so the bincode oversize/graphics-drop
+                // handling below does not apply to them.
+                let Some(framed) =
+                    crate::server::attach_stream::encode_server_message(prepared.message())
+                else {
+                    client.render_pending = false;
+                    crate::render_prof::event("full_render.skip_no_json_mapping");
                     crate::render_prof::duration_since("full_render.serialize", serialize_started);
-                    framed
-                }
-                Err(protocol::FramingError::Oversized { claimed, max }) if has_graphics => {
-                    warn!(
-                        client_id,
-                        claimed, max, "dropping graphics from oversized frame for client"
-                    );
-                    let Some(mut text_only_frame) = prepared.into_frame() else {
-                        crate::render_prof::event("full_render.serialize_error");
+                    continue;
+                };
+                crate::render_prof::duration_since("full_render.serialize", serialize_started);
+                framed
+            } else {
+                match Self::frame_server_message_with_max(prepared.message(), max_frame_size) {
+                    Ok(framed) => {
                         crate::render_prof::duration_since(
                             "full_render.serialize",
                             serialize_started,
                         );
-                        continue;
-                    };
-                    text_only_frame.graphics.clear();
-                    let Some(text_only_prepared) =
-                        client.render_state.prepare_frame(text_only_frame)
-                    else {
-                        client.render_pending = false;
-                        crate::render_prof::event("full_render.skip_identical_text_only");
-                        crate::render_prof::duration_since(
-                            "full_render.serialize",
-                            serialize_started,
+                        framed
+                    }
+                    Err(protocol::FramingError::Oversized { claimed, max }) if has_graphics => {
+                        warn!(
+                            client_id,
+                            claimed, max, "dropping graphics from oversized frame for client"
                         );
-                        continue;
-                    };
-                    let framed = match Self::frame_server_message(text_only_prepared.message()) {
-                        Ok(framed) => framed,
-                        Err(err) => {
-                            warn!(client_id, err = %err, "failed to serialize text-only frame for client");
-                            broken_clients.push(client_id);
+                        let Some(mut text_only_frame) = prepared.into_frame() else {
                             crate::render_prof::event("full_render.serialize_error");
                             crate::render_prof::duration_since(
                                 "full_render.serialize",
                                 serialize_started,
                             );
                             continue;
-                        }
-                    };
-                    prepared = text_only_prepared;
-                    commit_graphics_cache = false;
-                    crate::render_prof::duration_since("full_render.serialize", serialize_started);
-                    framed
-                }
-                Err(protocol::FramingError::Oversized { claimed, max }) => {
-                    warn!(
-                        client_id,
-                        claimed, max, "skipping oversized frame for client"
-                    );
-                    crate::render_prof::event("full_render.serialize_oversized");
-                    crate::render_prof::duration_since("full_render.serialize", serialize_started);
-                    continue;
-                }
-                Err(err) => {
-                    warn!(client_id, err = %err, "failed to serialize frame for client");
-                    broken_clients.push(client_id);
-                    crate::render_prof::event("full_render.serialize_error");
-                    crate::render_prof::duration_since("full_render.serialize", serialize_started);
-                    continue;
+                        };
+                        text_only_frame.graphics.clear();
+                        let Some(text_only_prepared) =
+                            client.render_state.prepare_frame(text_only_frame)
+                        else {
+                            client.render_pending = false;
+                            crate::render_prof::event("full_render.skip_identical_text_only");
+                            crate::render_prof::duration_since(
+                                "full_render.serialize",
+                                serialize_started,
+                            );
+                            continue;
+                        };
+                        let framed = match Self::frame_server_message(text_only_prepared.message())
+                        {
+                            Ok(framed) => framed,
+                            Err(err) => {
+                                warn!(client_id, err = %err, "failed to serialize text-only frame for client");
+                                broken_clients.push(client_id);
+                                crate::render_prof::event("full_render.serialize_error");
+                                crate::render_prof::duration_since(
+                                    "full_render.serialize",
+                                    serialize_started,
+                                );
+                                continue;
+                            }
+                        };
+                        prepared = text_only_prepared;
+                        commit_graphics_cache = false;
+                        crate::render_prof::duration_since(
+                            "full_render.serialize",
+                            serialize_started,
+                        );
+                        framed
+                    }
+                    Err(protocol::FramingError::Oversized { claimed, max }) => {
+                        warn!(
+                            client_id,
+                            claimed, max, "skipping oversized frame for client"
+                        );
+                        crate::render_prof::event("full_render.serialize_oversized");
+                        crate::render_prof::duration_since(
+                            "full_render.serialize",
+                            serialize_started,
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to serialize frame for client");
+                        broken_clients.push(client_id);
+                        crate::render_prof::event("full_render.serialize_error");
+                        crate::render_prof::duration_since(
+                            "full_render.serialize",
+                            serialize_started,
+                        );
+                        continue;
+                    }
                 }
             };
             crate::render_prof::counter("full_render.bytes", serialized.len() as u64);
@@ -5304,7 +5468,8 @@ next_tab = ""
         app_client_marks_git_refresh_due_on_first_attach(RenderEncoding::SemanticFrame);
     }
 
-    /// Builds a server with one test workspace and returns its terminal id string.
+    /// Builds a server with one test workspace and a renderable terminal
+    /// runtime, and returns its terminal id string.
     fn attach_test_server() -> (HeadlessServer, String) {
         let mut server = test_headless_server();
         let workspace = crate::workspace::Workspace::test_new("attached");
@@ -5315,8 +5480,24 @@ next_tab = ""
             .pane_state(pane_id)
             .expect("pane")
             .attached_terminal_id
-            .to_string();
-        (server, terminal_id)
+            .clone();
+        let terminal_id_string = terminal_id.to_string();
+
+        // TerminalRuntime::test_with_screen_bytes spawns a trivial detect
+        // task, so it needs an active tokio runtime just for construction.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(async {
+            server.app.terminal_runtimes.insert(
+                terminal_id,
+                crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"attached"),
+            );
+        });
+        rt.shutdown_timeout(Duration::from_millis(50));
+
+        (server, terminal_id_string)
     }
 
     /// Connects a binary terminal-attach client and attaches it to `terminal_id`.
@@ -5349,6 +5530,146 @@ next_tab = ""
             takeover,
         });
         (control_rx, render_rx)
+    }
+
+    fn stream_seat(
+        server: &mut HeadlessServer,
+        terminal_id: &str,
+        mode: crate::server::attach_stream::StreamMode,
+    ) -> (
+        u64,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let (writer, control_rx, render_rx) = test_client_writer();
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        server.handle_server_event(ServerEvent::AttachStreamConnected {
+            terminal_id: terminal_id.to_owned(),
+            mode,
+            size_role: SizeRole::Passive,
+            cols: 80,
+            rows: 24,
+            writer,
+            respond_to,
+        });
+        let accepted = response_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("attach response")
+            .expect("attach accepted");
+        (accepted.client_id, control_rx, render_rx)
+    }
+
+    fn json_event(bytes: Vec<u8>) -> serde_json::Value {
+        let text = String::from_utf8(bytes).expect("utf8");
+        serde_json::from_str(text.trim_end()).expect("json event")
+    }
+
+    #[test]
+    fn stream_seat_receives_snapshot_then_deltas() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (_client_id, _control_rx, render_rx) = stream_seat(
+            &mut server,
+            &terminal_id,
+            crate::server::attach_stream::StreamMode::Interactive,
+        );
+
+        server.render_and_stream();
+        let first = json_event(render_rx.try_recv().expect("first frame"));
+        assert_eq!(first["type"], "snapshot");
+        assert_eq!(first["cols"], 80);
+        assert_eq!(first["rows"], 24);
+        assert!(first["data"].as_str().expect("data").len() > 0);
+    }
+
+    #[test]
+    fn view_mode_input_is_rejected_once() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (client_id, control_rx, _render_rx) = stream_seat(
+            &mut server,
+            &terminal_id,
+            crate::server::attach_stream::StreamMode::View,
+        );
+
+        server.handle_server_event(ServerEvent::ClientInput {
+            client_id,
+            data: b"rm -rf /".to_vec(),
+        });
+        let error = json_event(control_rx.try_recv().expect("error event"));
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["code"], "input_not_allowed");
+
+        server.handle_server_event(ServerEvent::ClientInput {
+            client_id,
+            data: b"x".to_vec(),
+        });
+        assert!(
+            control_rx.try_recv().is_err(),
+            "the error is reported once, then the stream continues quietly"
+        );
+        assert!(
+            server.clients.contains_key(&client_id),
+            "seat stays attached"
+        );
+    }
+
+    #[test]
+    fn stream_seat_on_unknown_terminal_is_rejected() {
+        let (mut server, _terminal_id) = attach_test_server();
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+        server.handle_server_event(ServerEvent::AttachStreamConnected {
+            terminal_id: "nope".to_owned(),
+            mode: crate::server::attach_stream::StreamMode::View,
+            size_role: SizeRole::Passive,
+            cols: 80,
+            rows: 24,
+            writer,
+            respond_to,
+        });
+
+        assert_eq!(
+            response_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("attach response"),
+            Err("terminal_not_found".to_owned())
+        );
+        assert!(server.terminal_attach_clients.is_empty());
+    }
+
+    #[test]
+    fn takeover_detaches_stream_seats_with_a_json_event() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (_client_id, control_rx, _render_rx) = stream_seat(
+            &mut server,
+            &terminal_id,
+            crate::server::attach_stream::StreamMode::Interactive,
+        );
+        connect_attach_client(&mut server, 9, 80, 24, &terminal_id, true);
+
+        let event = json_event(control_rx.recv().expect("detached event"));
+        assert_eq!(event["type"], "detached");
+        assert_eq!(event["reason"], "terminal attach taken over");
+    }
+
+    #[test]
+    fn passive_seat_is_told_about_negotiated_resizes() {
+        let (mut server, terminal_id) = attach_test_server();
+        let (client_id, control_rx, _render_rx) = stream_seat(
+            &mut server,
+            &terminal_id,
+            crate::server::attach_stream::StreamMode::View,
+        );
+        connect_attach_client(&mut server, 9, 120, 40, &terminal_id, false);
+
+        let event = json_event(control_rx.try_recv().expect("resize event"));
+        assert_eq!(event["type"], "resize");
+        assert_eq!(event["cols"], 120);
+        assert_eq!(event["rows"], 40);
+        assert_eq!(
+            server.clients.get(&client_id).expect("seat").terminal_size,
+            (120, 40)
+        );
     }
 
     #[test]

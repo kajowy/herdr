@@ -22,6 +22,8 @@ use crate::protocol::{
     ClientLaunchMode, ClientMessage, RenderEncoding, ServerMessage, MAX_CLIPBOARD_IMAGE_PAYLOAD,
     MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
+use crate::server::attach_stream::StreamMode;
+use crate::server::clients::SizeRole;
 
 /// Minimum accepted attached client size.
 ///
@@ -278,6 +280,18 @@ impl ClientWriterQueue {
     }
 }
 
+/// Result of accepting a `terminal.attach_stream` seat.
+///
+/// Read by the API connection driver added in a later task; unread outside
+/// tests until that driver exists.
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AttachStreamAccepted {
+    pub(crate) client_id: u64,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+}
+
 /// Internal event sent from client transport threads to the main event loop.
 #[derive(Debug)]
 pub(crate) enum ServerEvent {
@@ -346,6 +360,20 @@ pub(crate) enum ServerEvent {
     ClientWriterDrained { client_id: u64 },
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
+    /// A `terminal.attach_stream` API request registered a JSON-wire seat.
+    ///
+    /// Constructed by the API connection driver added in a later task;
+    /// unconstructed outside tests until that driver exists.
+    #[allow(dead_code)]
+    AttachStreamConnected {
+        terminal_id: String,
+        mode: StreamMode,
+        size_role: SizeRole,
+        cols: u16,
+        rows: u16,
+        writer: ClientWriter,
+        respond_to: std::sync::mpsc::Sender<Result<AttachStreamAccepted, String>>,
+    },
 }
 
 /// Clamp client-reported terminal dimensions to a minimum viable size.
