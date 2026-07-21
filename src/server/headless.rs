@@ -3500,6 +3500,7 @@ impl HeadlessServer {
             crate::render_prof::event("retained_send_fallback.writer_missing");
             return false;
         };
+        let wire = client.wire;
         let prepare_started = crate::render_prof::timer();
         let Some(prepared) = client.render_state.prepare_frame(frame) else {
             client.render_pending = false;
@@ -3509,26 +3510,48 @@ impl HeadlessServer {
         };
         crate::render_prof::duration_since("retained_send.prepare_frame", prepare_started);
         let serialize_started = crate::render_prof::timer();
-        let serialized = match Self::frame_server_message(prepared.message()) {
-            Ok(framed) => {
+        let serialized = if wire == ClientWire::Json {
+            let Some(bytes) =
+                crate::server::attach_stream::encode_server_message(prepared.message())
+            else {
+                client.render_pending = false;
+                crate::render_prof::event("retained_send.skip_no_json_mapping");
                 crate::render_prof::duration_since("retained_send.serialize", serialize_started);
-                framed
-            }
-            Err(protocol::FramingError::Oversized { claimed, max }) => {
-                warn!(
-                    client_id,
-                    claimed, max, "skipping oversized retained frame for client"
-                );
-                crate::render_prof::event("retained_send_fallback.serialize_oversized");
-                crate::render_prof::duration_since("retained_send.serialize", serialize_started);
-                return false;
-            }
-            Err(err) => {
-                warn!(client_id, err = %err, "failed to serialize retained frame for client");
-                broken_clients.push(client_id);
-                crate::render_prof::event("retained_send_fallback.serialize_error");
-                crate::render_prof::duration_since("retained_send.serialize", serialize_started);
-                return false;
+                return true;
+            };
+            crate::render_prof::duration_since("retained_send.serialize", serialize_started);
+            bytes
+        } else {
+            match Self::frame_server_message(prepared.message()) {
+                Ok(framed) => {
+                    crate::render_prof::duration_since(
+                        "retained_send.serialize",
+                        serialize_started,
+                    );
+                    framed
+                }
+                Err(protocol::FramingError::Oversized { claimed, max }) => {
+                    warn!(
+                        client_id,
+                        claimed, max, "skipping oversized retained frame for client"
+                    );
+                    crate::render_prof::event("retained_send_fallback.serialize_oversized");
+                    crate::render_prof::duration_since(
+                        "retained_send.serialize",
+                        serialize_started,
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    warn!(client_id, err = %err, "failed to serialize retained frame for client");
+                    broken_clients.push(client_id);
+                    crate::render_prof::event("retained_send_fallback.serialize_error");
+                    crate::render_prof::duration_since(
+                        "retained_send.serialize",
+                        serialize_started,
+                    );
+                    return false;
+                }
             }
         };
         crate::render_prof::counter("retained_send.bytes", serialized.len() as u64);
