@@ -70,6 +70,34 @@ impl ClientWriter {
     }
 }
 
+/// Create a queue-backed [`ClientWriter`] for a `terminal.attach_stream` seat,
+/// paired with a drain the connection's writer thread pulls raw payloads from.
+/// The app pushes control/render bytes through the writer; the drain yields
+/// them in order (control prioritized) for verbatim socket writes.
+pub(crate) fn new_attach_stream_writer() -> (ClientWriter, AttachStreamDrain) {
+    let queue = ClientWriterQueue::new();
+    let writer = ClientWriter {
+        control: ClientControlWriter::queue(queue.clone()),
+        render: ClientRenderWriter::queue(queue.clone()),
+    };
+    (writer, AttachStreamDrain { queue })
+}
+
+/// Drain handle for an attach-stream seat's writer queue.
+pub(crate) struct AttachStreamDrain {
+    queue: Arc<ClientWriterQueue>,
+}
+
+impl AttachStreamDrain {
+    /// Block for the next payload (control prioritized). Returns `None` once the
+    /// seat's writer is dropped and the queue is fully drained.
+    pub(crate) fn recv(&self) -> Option<Vec<u8>> {
+        self.queue.recv().map(|item| match item {
+            ClientWriteItem::Control(data) | ClientWriteItem::Render(data) => data,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ClientControlWriter {
     target: ClientControlTarget,

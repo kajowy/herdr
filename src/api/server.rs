@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,6 +20,9 @@ use crate::ipc::{
     bind_local_listener, is_connection_closed_error, local_stream_peer_closed,
     remove_socket_file_if_owned, socket_file_identity, LocalStream, SocketFileIdentity,
 };
+use crate::server::attach_stream::{parse_command, StreamCommand, StreamMode};
+use crate::server::client_transport::ServerEvent;
+use crate::server::clients::SizeRole;
 
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
 pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -56,6 +59,7 @@ impl ServerHandle {
 pub fn start_server(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
+    attach_events: Option<tokio::sync::mpsc::Sender<ServerEvent>>,
 ) -> std::io::Result<ServerHandle> {
     start_server_with_capabilities(
         api_tx,
@@ -64,6 +68,7 @@ pub fn start_server(
             live_handoff: crate::platform::capabilities().live_handoff,
             detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
         }),
+        attach_events,
     )
 }
 
@@ -71,6 +76,7 @@ pub fn start_server_with_capabilities(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
     capabilities: Option<ServerCapabilities>,
+    attach_events: Option<tokio::sync::mpsc::Sender<ServerEvent>>,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path();
     prepare_socket_path(&path)?;
@@ -89,6 +95,7 @@ pub fn start_server_with_capabilities(
                     let api_tx = api_tx.clone();
                     let event_hub = event_hub.clone();
                     let capabilities = capabilities.clone();
+                    let attach_events = attach_events.clone();
                     let connection_running = Arc::clone(&listener_running);
                     std::thread::spawn(move || {
                         if let Err(err) = handle_connection(
@@ -97,6 +104,7 @@ pub fn start_server_with_capabilities(
                             &event_hub,
                             &connection_running,
                             capabilities,
+                            attach_events,
                         ) {
                             warn!(err = %err, "api connection failed");
                         }
@@ -138,6 +146,7 @@ fn handle_connection(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
+    attach_events: Option<tokio::sync::mpsc::Sender<ServerEvent>>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
@@ -247,6 +256,22 @@ fn handle_connection(
                     &request_id,
                     method,
                     api_response_outcome(&response),
+                    changes_ui,
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
+            }
+            result
+        }
+        Method::TerminalAttachStream(params) => {
+            let result =
+                stream_terminal_attach(stream, request_id.clone(), params, attach_events, running);
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    "stream_closed",
                     changes_ui,
                 ),
                 Err(err) => {
@@ -387,6 +412,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
+        Method::TerminalAttachStream(_) => "terminal.attach_stream",
     }
 }
 
@@ -508,6 +534,190 @@ fn stream_subscriptions(
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
+}
+
+/// Serves `terminal.attach_stream`: registers a JSON-wire seat with the
+/// headless server, then takes over the connection — streaming NDJSON
+/// events out and turning NDJSON commands read back into `ServerEvent`s.
+fn stream_terminal_attach(
+    mut stream: LocalStream,
+    request_id: String,
+    params: crate::api::schema::TerminalAttachStreamParams,
+    attach_events: Option<tokio::sync::mpsc::Sender<ServerEvent>>,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<()> {
+    let Some(attach_events) = attach_events else {
+        return write_json_line_allow_disconnect(
+            &mut stream,
+            &ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "unsupported".into(),
+                    message: "terminal.attach_stream is not available on this connection".into(),
+                },
+            },
+        );
+    };
+
+    let terminal_id = params.terminal_id.clone();
+    let mode = match params.mode {
+        crate::api::schema::StreamModeParam::Interactive => StreamMode::Interactive,
+        crate::api::schema::StreamModeParam::View => StreamMode::View,
+    };
+    let size_role = match params.size_role {
+        crate::api::schema::SizeRoleParam::Passive => SizeRole::Passive,
+        crate::api::schema::SizeRoleParam::Negotiating => SizeRole::Negotiating,
+    };
+
+    let (writer, writer_drain) = crate::server::client_transport::new_attach_stream_writer();
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+
+    if attach_events
+        .try_send(ServerEvent::AttachStreamConnected {
+            terminal_id: params.terminal_id,
+            mode,
+            size_role,
+            cols: params.cols.unwrap_or(0),
+            rows: params.rows.unwrap_or(0),
+            writer,
+            respond_to,
+        })
+        .is_err()
+    {
+        return write_json_line_allow_disconnect(
+            &mut stream,
+            &ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "server_unavailable".into(),
+                    message: "failed to register attach stream seat".into(),
+                },
+            },
+        );
+    }
+
+    let accepted = match response_rx.recv_timeout(APP_RESPONSE_TIMEOUT) {
+        Ok(Ok(accepted)) => accepted,
+        Ok(Err(code)) => {
+            return write_json_line_allow_disconnect(
+                &mut stream,
+                &ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code,
+                        message: "attach stream request rejected".into(),
+                    },
+                },
+            );
+        }
+        Err(_) => {
+            return write_json_line_allow_disconnect(
+                &mut stream,
+                &ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "server_unavailable".into(),
+                        message: "timed out waiting for attach stream acceptance".into(),
+                    },
+                },
+            );
+        }
+    };
+
+    if let Err(err) = write_json_line(
+        &mut stream,
+        &SuccessResponse {
+            id: request_id,
+            result: ResponseResult::AttachStreamStarted {
+                terminal_id,
+                cols: accepted.cols,
+                rows: accepted.rows,
+            },
+        },
+    ) {
+        if is_connection_closed_error(&err) {
+            return Ok(());
+        }
+        return Err(err);
+    }
+
+    let client_id = accepted.client_id;
+    let (recv_half, send_half) = stream.split();
+
+    // The writer thread drains the seat's writer queue to the socket and exits
+    // once the headless server drops the seat's writer after processing
+    // `ClientDetach` below (or when a socket write fails).
+    let writer_thread = std::thread::spawn(move || run_attach_writer(send_half, writer_drain));
+
+    let mut reader = BufReader::new(recv_half);
+    let mut line = String::new();
+    loop {
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF: client disconnected.
+            Ok(_) => {
+                let trimmed = line.trim_end_matches(['\n', '\r']);
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match parse_command(trimmed) {
+                    Ok(StreamCommand::Input { data }) => {
+                        if attach_events
+                            .blocking_send(ServerEvent::ClientInput { client_id, data })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(StreamCommand::Resize { cols, rows }) => {
+                        if attach_events
+                            .blocking_send(ServerEvent::ClientResize {
+                                client_id,
+                                cols,
+                                rows,
+                                cell_width_px: 0,
+                                cell_height_px: 0,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(StreamCommand::Detach) => break,
+                    Err(_) => {} // malformed command: ignore and keep reading.
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    let _ = attach_events.blocking_send(ServerEvent::ClientDetach { client_id });
+    let _ = writer_thread.join();
+    Ok(())
+}
+
+/// Drains the seat's writer queue (control prioritized), writing each payload
+/// verbatim to `send_half`. Exits once the seat's writer is dropped and the
+/// queue is drained, or a socket write fails.
+fn run_attach_writer(
+    mut send_half: impl Write,
+    drain: crate::server::client_transport::AttachStreamDrain,
+) {
+    while let Some(data) = drain.recv() {
+        if !write_attach_bytes(&mut send_half, &data) {
+            break;
+        }
+    }
+}
+
+fn write_attach_bytes(send_half: &mut impl Write, data: &[u8]) -> bool {
+    if send_half.write_all(data).is_err() {
+        return false;
+    }
+    send_half.flush().is_ok()
 }
 
 fn write_text_line(stream: &mut LocalStream, value: &str) -> std::io::Result<()> {
@@ -858,7 +1068,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
         let event_hub = EventHub::default();
-        handle_connection(server, &api_tx, &event_hub, &running, None).unwrap();
+        handle_connection(server, &api_tx, &event_hub, &running, None, None).unwrap();
 
         let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
         assert_eq!(response["id"], "wait_1");
@@ -885,7 +1095,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
         let event_hub = EventHub::default();
-        handle_connection(server, &api_tx, &event_hub, &running, None).unwrap();
+        handle_connection(server, &api_tx, &event_hub, &running, None, None).unwrap();
 
         let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
         assert_eq!(response["id"], "wait_2");
@@ -945,7 +1155,8 @@ mod tests {
         let event_hub = EventHub::default();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
+            let result =
+                handle_connection(server, &api_tx, &event_hub, &server_running, None, None);
             done_tx.send(result).unwrap();
         });
 
@@ -977,7 +1188,8 @@ mod tests {
         let event_hub = EventHub::default();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
+            let result =
+                handle_connection(server, &api_tx, &event_hub, &server_running, None, None);
             done_tx.send(result).unwrap();
         });
 
@@ -1009,7 +1221,8 @@ mod tests {
         let event_hub = EventHub::default();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
+            let result =
+                handle_connection(server, &api_tx, &event_hub, &server_running, None, None);
             done_tx.send(result).unwrap();
         });
 
@@ -1022,5 +1235,98 @@ mod tests {
         let result = done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(result.is_ok());
         server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn attach_stream_without_server_event_channel_reports_unsupported() {
+        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (mut client, server, _path) = local_stream_pair("api-attach-unsupported");
+        client
+            .write_all(
+                br#"{"id":"as_1","method":"terminal.attach_stream","params":{"terminal_id":"t1","mode":"view","size_role":"passive"}}"#,
+            )
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let event_hub = EventHub::default();
+        let thread = std::thread::spawn(move || {
+            handle_connection(server, &api_tx, &event_hub, &running, None, None)
+        });
+
+        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
+        assert_eq!(response["error"]["code"], "unsupported");
+        thread.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn attach_stream_forwards_the_seat_request_and_streams_events() {
+        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+        let (mut client, server, _path) = local_stream_pair("api-attach-stream");
+        client
+            .write_all(
+                br#"{"id":"as_2","method":"terminal.attach_stream","params":{"terminal_id":"t1","mode":"interactive","size_role":"passive","cols":80,"rows":24}}"#,
+            )
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let event_hub = EventHub::default();
+        let thread = std::thread::spawn(move || {
+            handle_connection(server, &api_tx, &event_hub, &running, None, Some(event_tx))
+        });
+
+        // The server side of the seat: accept the registration, then push one frame.
+        let writer = loop {
+            match event_rx.blocking_recv().expect("seat request") {
+                crate::server::client_transport::ServerEvent::AttachStreamConnected {
+                    terminal_id,
+                    writer,
+                    respond_to,
+                    ..
+                } => {
+                    assert_eq!(terminal_id, "t1");
+                    respond_to
+                        .send(Ok(crate::server::client_transport::AttachStreamAccepted {
+                            client_id: 42,
+                            cols: 80,
+                            rows: 24,
+                        }))
+                        .unwrap();
+                    break writer;
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        };
+
+        let started: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
+        assert_eq!(started["result"]["type"], "attach_stream_started");
+
+        writer
+            .render
+            .try_send(crate::server::attach_stream::encode_resize(80, 24))
+            .unwrap();
+        let event: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
+        assert_eq!(event["type"], "resize");
+
+        // Input from the browser reaches the server loop as a ClientInput event.
+        client
+            .write_all(br#"{"type":"input","data":"aGk="}"#)
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+        match event_rx.blocking_recv().expect("input event") {
+            crate::server::client_transport::ServerEvent::ClientInput { client_id, data } => {
+                assert_eq!(client_id, 42);
+                assert_eq!(data, b"hi".to_vec());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        drop(client);
+        thread.join().unwrap().unwrap();
     }
 }

@@ -156,6 +156,11 @@ pub enum ResponseResult {
         explain: serde_json::Value,
     },
     SubscriptionStarted {},
+    AttachStreamStarted {
+        terminal_id: String,
+        cols: u16,
+        rows: u16,
+    },
     WaitMatched {
         event: EventEnvelope,
     },

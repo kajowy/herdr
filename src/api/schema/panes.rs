@@ -572,3 +572,38 @@ pub struct PaneReadResult {
     pub revision: u64,
     pub truncated: bool,
 }
+
+/// Whether an attached seat may send input or only observe the terminal.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamModeParam {
+    #[default]
+    Interactive,
+    View,
+}
+
+/// Whether an attached seat drives PTY sizing or renders at the server's size.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SizeRoleParam {
+    #[default]
+    Passive,
+    Negotiating,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TerminalAttachStreamParams {
+    pub terminal_id: String,
+    #[serde(default)]
+    pub mode: StreamModeParam,
+    #[serde(default)]
+    pub size_role: SizeRoleParam,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
+}

@@ -3078,10 +3078,26 @@
           },
           "type": "object"
         },
+        "SizeRoleParam": {
+          "description": "Whether an attached seat drives PTY sizing or renders at the server's size.",
+          "enum": [
+            "passive",
+            "negotiating"
+          ],
+          "type": "string"
+        },
         "SplitDirection": {
           "enum": [
             "right",
             "down"
+          ],
+          "type": "string"
+        },
+        "StreamModeParam": {
+          "description": "Whether an attached seat may send input or only observe the terminal.",
+          "enum": [
+            "interactive",
+            "view"
           ],
           "type": "string"
         },
@@ -3495,6 +3511,33 @@
           ],
           "type": "object"
         },
+        "TabReportPrParams": {
+          "properties": {
+            "clear_pr": {
+              "default": false,
+              "type": "boolean"
+            },
+            "merged": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pr": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
         "TabTarget": {
           "properties": {
             "tab_id": {
@@ -3503,6 +3546,45 @@
           },
           "required": [
             "tab_id"
+          ],
+          "type": "object"
+        },
+        "TerminalAttachStreamParams": {
+          "properties": {
+            "cols": {
+              "default": null,
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/StreamModeParam",
+              "default": "interactive"
+            },
+            "rows": {
+              "default": null,
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "size_role": {
+              "$ref": "#/schemas/request/$defs/SizeRoleParam",
+              "default": "passive"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "terminal_id"
           ],
           "type": "object"
         },
@@ -3571,6 +3653,33 @@
           "required": [
             "workspace_id",
             "label"
+          ],
+          "type": "object"
+        },
+        "WorkspaceReportPrParams": {
+          "properties": {
+            "clear_pr": {
+              "default": false,
+              "type": "boolean"
+            },
+            "merged": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pr": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -4006,6 +4115,22 @@
         {
           "properties": {
             "method": {
+              "const": "workspace.report_pr",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceReportPrParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "worktree.list",
               "type": "string"
             },
@@ -4171,6 +4296,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.report_pr",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabReportPrParams"
             }
           },
           "required": [
@@ -5003,6 +5144,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "terminal.attach_stream",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TerminalAttachStreamParams"
             }
           },
           "required": [
@@ -8181,6 +8338,36 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cols": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "rows": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "terminal_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "attach_stream_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "terminal_id",
+                "cols",
+                "rows"
               ],
               "type": "object"
             },

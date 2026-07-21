@@ -1128,7 +1128,11 @@ impl HeadlessServer {
             .api_tx
             .clone()
             .ok_or_else(|| io::Error::other("cannot restore api socket without api sender"))?;
-        let api_server = api::start_server(api_tx, self.app.event_hub.clone())?;
+        let api_server = api::start_server(
+            api_tx,
+            self.app.event_hub.clone(),
+            Some(self.server_event_tx.clone()),
+        )?;
 
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
@@ -4230,17 +4234,6 @@ pub fn run_server() -> io::Result<()> {
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
 
-    // Start the JSON API socket server.
-    let _api_server = match api::start_server(api_tx.clone(), event_hub.clone()) {
-        Ok(server) => server,
-        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-            eprintln!("error: herdr server is already running");
-            eprintln!("api socket: {}", api::socket_path().display());
-            std::process::exit(1);
-        }
-        Err(err) => return Err(err),
-    };
-
     let no_session = false; // Server always does session persistence.
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -4268,12 +4261,13 @@ pub fn run_server() -> io::Result<()> {
         app.local_terminal_notifications = false;
         app.local_input_source_switch = false;
 
-        // Create the headless server.
+        // Create the headless server first so the JSON API server can be
+        // handed its server event sender for `terminal.attach_stream` seats.
         let mut server = match HeadlessServer::new(
             app,
             &loaded_config.diagnostics,
             Some(api_tx.clone()),
-            Some(_api_server),
+            None,
         ) {
             Ok(server) => server,
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
@@ -4283,6 +4277,29 @@ pub fn run_server() -> io::Result<()> {
             }
             Err(err) => return Err(err),
         };
+
+        // Start the JSON API socket server.
+        let api_server = match api::start_server(
+            api_tx.clone(),
+            server.app.event_hub.clone(),
+            Some(server.server_event_tx.clone()),
+        ) {
+            Ok(server) => server,
+            Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+                eprintln!("error: herdr server is already running");
+                eprintln!("api socket: {}", api::socket_path().display());
+                std::process::exit(1);
+            }
+            Err(err) => return Err(err),
+        };
+        #[cfg(unix)]
+        {
+            server.api_server = Some(api_server);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = api_server;
+        }
 
         info!(
             api_socket = %api::socket_path().display(),
@@ -4375,13 +4392,14 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         }
         wait_for_old_public_sockets_to_close(Duration::from_secs(5))?;
 
-        let api_server = api::start_server(api_tx.clone(), event_hub.clone())?;
-        let mut server = HeadlessServer::new(
-            app,
-            &loaded_config.diagnostics,
-            Some(api_tx.clone()),
-            Some(api_server),
+        let mut server =
+            HeadlessServer::new(app, &loaded_config.diagnostics, Some(api_tx.clone()), None)?;
+        let api_server = api::start_server(
+            api_tx.clone(),
+            event_hub.clone(),
+            Some(server.server_event_tx.clone()),
         )?;
+        server.api_server = Some(api_server);
         crate::server::handoff::report_ready(&mut received.stream)?;
         crate::server::handoff::wait_committed(&mut received.stream)?;
         server.app.assume_handoff_ownership();
