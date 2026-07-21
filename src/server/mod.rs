@@ -1,3 +1,6 @@
+// Pure wire codec; wired into the socket listener by a later task.
+#[allow(dead_code)]
+pub(crate) mod attach_stream;
 pub mod autodetect;
 #[cfg(unix)]
 pub(crate) mod client_accept;
