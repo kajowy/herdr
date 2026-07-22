@@ -602,6 +602,9 @@ pub struct TerminalAttachStreamParams {
     pub mode: StreamModeParam,
     #[serde(default)]
     pub size_role: SizeRoleParam,
+    /// For an interactive seat, whether to take over an existing controller.
+    #[serde(default)]
+    pub takeover: bool,
     #[serde(default)]
     pub cols: Option<u16>,
     #[serde(default)]

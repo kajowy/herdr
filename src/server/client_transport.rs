@@ -397,6 +397,8 @@ pub(crate) enum ServerEvent {
         terminal_id: String,
         mode: StreamMode,
         size_role: SizeRole,
+        /// Whether an interactive seat evicts an existing controller.
+        takeover: bool,
         cols: u16,
         rows: u16,
         writer: ClientWriter,

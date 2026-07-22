@@ -577,6 +577,7 @@ fn stream_terminal_attach(
             terminal_id: params.terminal_id,
             mode,
             size_role,
+            takeover: params.takeover,
             cols: params.cols.unwrap_or(0),
             rows: params.rows.unwrap_or(0),
             writer,
@@ -1324,6 +1325,10 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
 
+        // The real headless server drops the seat's writer when it processes
+        // ClientDetach; the mock must do the same so the writer thread's queue
+        // drain sees all senders gone and exits (letting the driver join).
+        drop(writer);
         drop(client);
         thread.join().unwrap().unwrap();
     }

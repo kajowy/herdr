@@ -331,10 +331,12 @@ fn attach_stream_delivers_snapshot_then_frames_and_accepts_input() {
 
     let (pane_id, terminal_id) = create_workspace_and_root_pane(&api_socket, "attach-stream-basic");
 
+    // One interactive controller (which may send input) plus one view-only
+    // observer. The single-controller rule forbids a second interactive seat,
+    // so multi-viewer fan-out is proven through the observer.
     let (mut conn_a, started_a) =
         StreamConn::open(&api_socket, &terminal_id, "interactive", 80, 24);
-    let (mut conn_b, started_b) =
-        StreamConn::open(&api_socket, &terminal_id, "interactive", 80, 24);
+    let (mut conn_b, started_b) = StreamConn::open(&api_socket, &terminal_id, "view", 80, 24);
 
     assert_eq!(started_a["result"]["type"], "attach_stream_started");
     assert_eq!(started_b["result"]["type"], "attach_stream_started");

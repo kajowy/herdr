@@ -3579,6 +3579,11 @@
               "$ref": "#/schemas/request/$defs/SizeRoleParam",
               "default": "passive"
             },
+            "takeover": {
+              "default": false,
+              "description": "For an interactive seat, whether to take over an existing controller.",
+              "type": "boolean"
+            },
             "terminal_id": {
               "type": "string"
             }
