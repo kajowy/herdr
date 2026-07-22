@@ -1476,21 +1476,16 @@ impl HeadlessServer {
             }
             Some(size)
         } else {
-            if !self.terminal_attach_sizes.contains_key(terminal_id) {
-                if let Some(seed) =
-                    self.terminal_attach_clients
-                        .get(terminal_id)
-                        .and_then(|seats| {
-                            seats
-                                .iter()
-                                .filter_map(|client_id| self.clients.get(client_id))
-                                .find(|client| client.size_role == SizeRole::Passive)
-                                .map(|client| client.terminal_size)
-                        })
-                {
-                    self.terminal_attach_sizes
-                        .insert(terminal_id.to_owned(), seed);
-                }
+            // No negotiating seat drives the winsize. Passive seats render at
+            // the terminal's actual current grid so they get the full screen to
+            // scale client-side, never at their own declared size (which would
+            // clip the grid). The PTY is left untouched.
+            let runtime_size = self
+                .runtime_for_terminal_id_string(terminal_id)
+                .map(crate::terminal::TerminalRuntime::grid_size);
+            if let Some(runtime_size) = runtime_size {
+                self.terminal_attach_sizes
+                    .insert(terminal_id.to_owned(), runtime_size);
             }
             self.terminal_attach_sizes.get(terminal_id).copied()
         };
@@ -5628,7 +5623,7 @@ next_tab = ""
         assert_eq!(first["type"], "snapshot");
         assert_eq!(first["cols"], 80);
         assert_eq!(first["rows"], 24);
-        assert!(first["data"].as_str().expect("data").len() > 0);
+        assert!(!first["data"].as_str().expect("data").is_empty());
     }
 
     #[test]
@@ -5685,6 +5680,59 @@ next_tab = ""
             Err("terminal_not_found".to_owned())
         );
         assert!(server.terminal_attach_clients.is_empty());
+    }
+
+    #[test]
+    fn passive_only_seat_renders_at_runtime_grid_size() {
+        // attach_test_server's runtime grid is 80x24. A passive-only seat that
+        // declares a smaller size must be re-pointed to the runtime's actual
+        // grid (so it receives the full screen to scale client-side), not left
+        // at its own declared size, which would clip the grid.
+        let (mut server, terminal_id) = attach_test_server();
+        let (writer, control_rx, _render_rx) = test_client_writer();
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        server.handle_server_event(ServerEvent::AttachStreamConnected {
+            terminal_id: terminal_id.clone(),
+            mode: crate::server::attach_stream::StreamMode::View,
+            size_role: SizeRole::Passive,
+            cols: 40,
+            rows: 12,
+            writer,
+            respond_to,
+        });
+        let accepted = response_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("attach response")
+            .expect("attach accepted");
+
+        assert_eq!(
+            server
+                .clients
+                .get(&accepted.client_id)
+                .expect("seat")
+                .terminal_size,
+            (80, 24),
+            "passive-only seat renders at the runtime grid, not its declared 40x12"
+        );
+        assert_eq!(
+            (accepted.cols, accepted.rows),
+            (80, 24),
+            "accept reports the runtime grid size"
+        );
+
+        let mut saw_resize = false;
+        while let Ok(bytes) = control_rx.try_recv() {
+            let event = json_event(bytes);
+            if event["type"] == "resize" {
+                assert_eq!(event["cols"], 80);
+                assert_eq!(event["rows"], 24);
+                saw_resize = true;
+            }
+        }
+        assert!(
+            saw_resize,
+            "seat is told the true grid via a resize from its declared 40x12"
+        );
     }
 
     #[test]

@@ -337,21 +337,26 @@ fn attach_stream_delivers_snapshot_then_frames_and_accepts_input() {
         StreamConn::open(&api_socket, &terminal_id, "interactive", 80, 24);
 
     assert_eq!(started_a["result"]["type"], "attach_stream_started");
-    assert_eq!(started_a["result"]["cols"], 80);
-    assert_eq!(started_a["result"]["rows"], 24);
     assert_eq!(started_b["result"]["type"], "attach_stream_started");
-    assert_eq!(started_b["result"]["cols"], 80);
-    assert_eq!(started_b["result"]["rows"], 24);
 
-    let snapshot_a = conn_a.read_line(Duration::from_secs(5));
-    assert_eq!(snapshot_a["type"], "snapshot");
-    assert_eq!(snapshot_a["cols"], 80);
-    assert_eq!(snapshot_a["rows"], 24);
+    // Passive seats render at the terminal's real grid, not their declared
+    // 80x24; the started response reports that grid and the snapshot must match
+    // it (a `resize` event may precede the snapshot when the grid differs).
+    let cols = started_a["result"]["cols"].as_u64().expect("started cols");
+    let rows = started_a["result"]["rows"].as_u64().expect("started rows");
+    assert!(cols > 0 && rows > 0, "started reports a real grid size");
 
-    let snapshot_b = conn_b.read_line(Duration::from_secs(5));
-    assert_eq!(snapshot_b["type"], "snapshot");
-    assert_eq!(snapshot_b["cols"], 80);
-    assert_eq!(snapshot_b["rows"], 24);
+    let snapshot_a = conn_a
+        .wait_for_event_type("snapshot", Duration::from_secs(5))
+        .expect("connection A should receive a snapshot");
+    assert_eq!(snapshot_a["cols"].as_u64(), Some(cols));
+    assert_eq!(snapshot_a["rows"].as_u64(), Some(rows));
+
+    let snapshot_b = conn_b
+        .wait_for_event_type("snapshot", Duration::from_secs(5))
+        .expect("connection B should receive a snapshot");
+    assert_eq!(snapshot_b["cols"], snapshot_a["cols"]);
+    assert_eq!(snapshot_b["rows"], snapshot_a["rows"]);
 
     // Drain any redraw noise so the frame assertions below are tied to our input.
     conn_a.drain(Duration::from_millis(200));
@@ -402,7 +407,11 @@ fn attach_stream_view_mode_rejects_input() {
     let (mut conn, started) = StreamConn::open(&api_socket, &terminal_id, "view", 80, 24);
     assert_eq!(started["result"]["type"], "attach_stream_started");
 
-    let snapshot = conn.read_line(Duration::from_secs(5));
+    // A leading `resize` may precede the snapshot when the passive seat's
+    // declared size differs from the terminal's real grid.
+    let snapshot = conn
+        .wait_for_event_type("snapshot", Duration::from_secs(5))
+        .expect("view seat should receive a snapshot");
     assert_eq!(snapshot["type"], "snapshot");
 
     conn.drain(Duration::from_millis(200));

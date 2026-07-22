@@ -226,6 +226,12 @@ impl TerminalRuntime {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }
 
+    /// Current PTY grid size as `(cols, rows)`.
+    pub fn grid_size(&self) -> (u16, u16) {
+        let (rows, cols) = self.0.current_size();
+        (cols, rows)
+    }
+
     #[cfg(unix)]
     pub fn nudge_child_redraw_after_handoff(&self) {
         self.0.nudge_child_redraw_after_handoff();

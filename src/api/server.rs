@@ -1280,26 +1280,24 @@ mod tests {
         });
 
         // The server side of the seat: accept the registration, then push one frame.
-        let writer = loop {
-            match event_rx.blocking_recv().expect("seat request") {
-                crate::server::client_transport::ServerEvent::AttachStreamConnected {
-                    terminal_id,
-                    writer,
-                    respond_to,
-                    ..
-                } => {
-                    assert_eq!(terminal_id, "t1");
-                    respond_to
-                        .send(Ok(crate::server::client_transport::AttachStreamAccepted {
-                            client_id: 42,
-                            cols: 80,
-                            rows: 24,
-                        }))
-                        .unwrap();
-                    break writer;
-                }
-                other => panic!("unexpected event: {other:?}"),
+        let writer = match event_rx.blocking_recv().expect("seat request") {
+            crate::server::client_transport::ServerEvent::AttachStreamConnected {
+                terminal_id,
+                writer,
+                respond_to,
+                ..
+            } => {
+                assert_eq!(terminal_id, "t1");
+                respond_to
+                    .send(Ok(crate::server::client_transport::AttachStreamAccepted {
+                        client_id: 42,
+                        cols: 80,
+                        rows: 24,
+                    }))
+                    .unwrap();
+                writer
             }
+            other => panic!("unexpected event: {other:?}"),
         };
 
         let started: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
