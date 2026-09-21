@@ -797,6 +797,59 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
 }
 
 #[test]
+fn agent_sort_toggle_cycles_spaces_priority_grouped() {
+    let mut projected = snapshot();
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("pi".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let toggle = state.hits.agent_sort_toggle;
+        assert!(!toggle.is_empty());
+        let label = frame_rows(&frame)[toggle.y as usize]
+            .chars()
+            .skip(toggle.x as usize)
+            .take(toggle.width as usize)
+            .collect::<String>();
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x,
+            row: toggle.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        seen.push((label, state.config.agent_panel_sort));
+    }
+
+    use crate::config::AgentPanelSortConfig::{Grouped, Priority, Spaces};
+    assert_eq!(
+        seen,
+        vec![
+            ("spaces".to_string(), Priority),
+            ("priority".to_string(), Grouped),
+            ("grouped".to_string(), Spaces),
+        ]
+    );
+}
+
+#[test]
 fn workspace_actions_preserve_selected_target_and_client_confirmation() {
     let mut snapshot = snapshot();
     let mut second = snapshot.workspaces[0].clone();

@@ -1985,15 +1985,7 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {
-                    let sort = match self.config.agent_panel_sort {
-                        crate::config::AgentPanelSortConfig::Spaces => {
-                            crate::config::AgentPanelSortConfig::Priority
-                        }
-                        crate::config::AgentPanelSortConfig::Priority => {
-                            crate::config::AgentPanelSortConfig::Spaces
-                        }
-                    };
-                    self.config.agent_panel_sort = sort;
+                    self.config.agent_panel_sort = self.config.agent_panel_sort.next();
                     self.agent_panel_sort_manual = true;
                     self.agent_scroll = 0;
                     self.persist_chrome_preferences(outcome);
