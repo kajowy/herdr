@@ -265,3 +265,31 @@ fn grouped_mode_across_machines_labels_spaces_with_their_machine() {
         &super::super::agent_sidebar::agent_group_key("ws_1")
     ));
 }
+
+#[test]
+fn grouped_agent_reveal_scrolls_to_the_agent_line() {
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Grouped;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(grouped_snapshot()));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.agents = vec![shell_agent("pane_9", "ws_1", "tab_1", AgentStatus::Blocked)];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    // Lines: client-shell header, pi; second header, two agents; Build header,
+    // pane_9. Revealing pane_9 in two rows starts at the Build header.
+    state.reveal_endpoint_agent(&endpoint_id, "pane_9", 2);
+    assert_eq!(state.agent_scroll, 5);
+}
