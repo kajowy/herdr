@@ -90,6 +90,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         server_config_diagnostic: None,
         server_config_diagnostic_without_keybindings: None,
         terminal_attach_owners: HashMap::new(),
+        terminal_attach_restore_sizes: HashMap::new(),
         pending_alt_screen_reads: Vec::new(),
         deferred_alt_screen_reads: Vec::new(),
         next_activity_stamp: 1,
@@ -3613,6 +3614,38 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
             assert_eq!(server.agent_read_not_idle_error(&visible_request), None);
         },
     );
+}
+
+#[test]
+fn terminal_attach_disconnect_restores_pre_attach_pty_size_without_shell_clients() {
+    with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
+        let pty_size = |server: &HeadlessServer| {
+            server
+                .app
+                .terminal_runtimes
+                .get(&terminal_id)
+                .expect("runtime")
+                .current_size()
+        };
+        let pre_attach_size = pty_size(server);
+
+        connect_pending_terminal_client(server, 2);
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 2,
+                terminal_id: terminal_id_string,
+                takeover: false,
+            })
+        );
+        assert_eq!(pty_size(server), (30, 100), "controller drives the PTY");
+
+        server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 2 });
+        assert_eq!(
+            pty_size(server),
+            pre_attach_size,
+            "PTY returns to its pre-attach size once the controller leaves"
+        );
+    });
 }
 
 #[test]

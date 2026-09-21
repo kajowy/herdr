@@ -230,6 +230,9 @@ pub struct HeadlessServer {
     server_config_diagnostic_without_keybindings: Option<String>,
     /// Writable direct attach owner per terminal id string.
     terminal_attach_owners: HashMap<String, u64>,
+    /// PTY `(rows, cols)` captured before a terminal gained its controller,
+    /// restored when the controller leaves.
+    terminal_attach_restore_sizes: HashMap<String, (u16, u16)>,
     /// Deferred application-history reads currently driving alternate-screen viewports.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     /// Reads waiting for an alternate-screen traversal of the same terminal to finish.
@@ -368,6 +371,7 @@ impl HeadlessServer {
             server_config_diagnostic,
             server_config_diagnostic_without_keybindings,
             terminal_attach_owners: HashMap::new(),
+            terminal_attach_restore_sizes: HashMap::new(),
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
             next_activity_stamp: 1,
@@ -1038,6 +1042,12 @@ impl HeadlessServer {
             crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
             if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
                 self.terminal_attach_owners.remove(&terminal_id);
+                if let Some((rows, cols)) = self.terminal_attach_restore_sizes.remove(&terminal_id)
+                {
+                    if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
+                        runtime.resize(rows, cols, 0, 0);
+                    }
+                }
                 if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
                     self.app
                         .state
@@ -1904,6 +1914,11 @@ impl HeadlessServer {
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
+        if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
+            self.terminal_attach_restore_sizes
+                .entry(terminal_id.clone())
+                .or_insert_with(|| runtime.current_size());
+        }
         self.terminal_attach_owners
             .insert(terminal_id.clone(), client_id);
         self.app
