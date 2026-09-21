@@ -772,3 +772,30 @@ pub struct PaneLinkRegion {
     pub start_col: u16,
     pub end_col: u16,
 }
+
+/// Whether a `terminal.attach_stream` connection controls the terminal or only observes it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalAttachStreamMode {
+    /// Become the terminal's single controller: input and resize reach the PTY.
+    #[default]
+    Interactive,
+    /// Observe the terminal; resize only changes this stream's render area.
+    View,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TerminalAttachStreamParams {
+    pub terminal_id: String,
+    #[serde(default)]
+    pub mode: TerminalAttachStreamMode,
+    /// For an interactive stream, whether to replace an existing controller.
+    #[serde(default)]
+    pub takeover: bool,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
+}

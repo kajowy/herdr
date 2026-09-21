@@ -81,13 +81,25 @@ fn connect_terminal_session_stream(
     crate::logging::startup("client");
     info!(path = %socket_path.display(), target = %target, cols, rows, "{log_message}");
 
-    let mut stream = match crate::ipc::connect_local_stream(&socket_path) {
+    let stream = match open_terminal_session_stream(cols, rows) {
         Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("herdr: {}", ClientError::ConnectionFailed(err));
+        Err(message) => {
+            eprintln!("herdr: {message}");
             std::process::exit(1);
         }
     };
+
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
+/// Connects to the local client socket and completes a terminal-ANSI handshake.
+///
+/// Returns the handshaken stream, ready for `ObserveTerminal` or
+/// `ControlTerminal`, or a user-facing error message.
+pub(crate) fn open_terminal_session_stream(cols: u16, rows: u16) -> Result<LocalStream, String> {
+    let mut stream = crate::ipc::connect_local_stream(&client_socket_path())
+        .map_err(|err| ClientError::ConnectionFailed(err).to_string())?;
 
     match do_handshake(
         &mut stream,
@@ -103,19 +115,13 @@ fn connect_terminal_session_stream(
     ) {
         Ok(handshake) if handshake.encoding == RenderEncoding::TerminalAnsi => {}
         Ok(handshake) => {
-            eprintln!(
-                "herdr: terminal session observe negotiated unsupported encoding {:?}",
+            return Err(format!(
+                "terminal session observe negotiated unsupported encoding {:?}",
                 handshake.encoding
-            );
-            std::process::exit(1);
+            ));
         }
-        Err(err) => {
-            eprintln!("herdr: {err}");
-            std::process::exit(1);
-        }
+        Err(err) => return Err(err.to_string()),
     }
-
-    stream.set_nonblocking(false)?;
     Ok(stream)
 }
 

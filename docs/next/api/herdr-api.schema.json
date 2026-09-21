@@ -4429,6 +4429,61 @@
           ],
           "type": "object"
         },
+        "TerminalAttachStreamMode": {
+          "description": "Whether a `terminal.attach_stream` connection controls the terminal or only observes it.",
+          "oneOf": [
+            {
+              "const": "interactive",
+              "description": "Become the terminal's single controller: input and resize reach the PTY.",
+              "type": "string"
+            },
+            {
+              "const": "view",
+              "description": "Observe the terminal; resize only changes this stream's render area.",
+              "type": "string"
+            }
+          ]
+        },
+        "TerminalAttachStreamParams": {
+          "properties": {
+            "cols": {
+              "default": null,
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/TerminalAttachStreamMode",
+              "default": "interactive"
+            },
+            "rows": {
+              "default": null,
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "takeover": {
+              "default": false,
+              "description": "For an interactive stream, whether to replace an existing controller.",
+              "type": "boolean"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "terminal_id"
+          ],
+          "type": "object"
+        },
         "ToastHerdrPosition": {
           "enum": [
             "top-left",
@@ -6409,6 +6464,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "terminal.attach_stream",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TerminalAttachStreamParams"
             }
           },
           "required": [
@@ -10115,6 +10186,36 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cols": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "rows": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "terminal_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "attach_stream_started",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "terminal_id",
+                "cols",
+                "rows"
               ],
               "type": "object"
             },
