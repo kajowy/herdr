@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
@@ -63,6 +63,7 @@ pub(super) fn render_agent_panel(
         snapshot.agent_view_label.as_deref(),
         config,
         hits,
+        true,
     ) {
         return;
     }
@@ -93,18 +94,21 @@ pub(super) fn render_agent_panel_header(
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
+    separator: bool,
 ) -> bool {
     if area.height == 0 {
         return false;
     }
-    put_text(
-        buffer,
-        area.x,
-        area.y,
-        area.width,
-        &"─".repeat(area.width as usize),
-        Style::default().fg(config.palette.surface_dim),
-    );
+    if separator {
+        put_text(
+            buffer,
+            area.x,
+            area.y,
+            area.width,
+            &"─".repeat(area.width as usize),
+            Style::default().fg(config.palette.surface_dim),
+        );
+    }
     if area.height < 2 {
         return false;
     }
@@ -161,7 +165,7 @@ pub(super) fn render_agent_list<T>(
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
     row_lines: impl Fn(&T) -> usize,
-    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+    render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
     let body = Rect::new(
         area.x,
@@ -169,6 +173,48 @@ pub(super) fn render_agent_list<T>(
         area.width,
         area.height.saturating_sub(3),
     );
+    let row_heights = rows
+        .iter()
+        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
+        .collect::<Vec<_>>();
+    let gaps = rows
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            if index + 1 < rows.len() {
+                config.agents.row_gap
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<_>>();
+    render_agent_list_body(
+        buffer,
+        body,
+        rows,
+        &row_heights,
+        &gaps,
+        empty_message,
+        config,
+        agent_scroll,
+        hits,
+        render_row,
+    );
+}
+
+/// Render scrollable agent-panel rows into `body` with per-row heights and trailing gaps.
+fn render_agent_list_body<T>(
+    buffer: &mut Buffer,
+    body: Rect,
+    rows: &[T],
+    row_heights: &[u16],
+    gaps: &[u16],
+    empty_message: Option<&str>,
+    config: &ClientShellConfig,
+    agent_scroll: &mut usize,
+    hits: &mut ShellHitMap,
+    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+) {
     hits.agent_body = body;
     if body.is_empty() || rows.is_empty() {
         *agent_scroll = 0;
@@ -187,23 +233,7 @@ pub(super) fn render_agent_list<T>(
         return;
     }
 
-    let row_heights = rows
-        .iter()
-        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
-        .collect::<Vec<_>>();
-    let gaps = rows
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            }
-        })
-        .collect::<Vec<_>>();
-    let metrics =
-        super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *agent_scroll);
+    let metrics = super::scroll::list_scroll_metrics(row_heights, gaps, body.height, *agent_scroll);
     hits.agent_max_scroll = metrics.max_offset_from_bottom;
     hits.agent_scroll_metrics = Some(metrics);
     *agent_scroll = metrics
@@ -219,13 +249,7 @@ pub(super) fn render_agent_list<T>(
         }
         let rect = Rect::new(body.x, y, content_width, height);
         render_row(buffer, rect, row, hits);
-        y = y
-            .saturating_add(height)
-            .saturating_add(if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            });
+        y = y.saturating_add(height).saturating_add(gaps[index]);
     }
 
     if show_scrollbar {
@@ -265,20 +289,8 @@ pub(super) fn agent_row(
         .panes
         .iter()
         .find(|pane| pane.pane_id == agent.pane_id);
-    let tab_count = snapshot
-        .tabs
-        .iter()
-        .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-        .count();
-    let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
-    let agent_label = agent
-        .display_agent
-        .as_deref()
-        .or(agent.name.as_deref())
-        .or(agent.agent.as_deref())
-        .or(agent.title.as_deref());
+    let tab_label = agent_tab_label(snapshot, agent, tab);
+    let agent_label = agent_display_label(agent);
     let labels = agent
         .state_labels
         .iter()
@@ -317,6 +329,31 @@ pub(super) fn agent_row(
         focused: agent.focused,
         rows,
     })
+}
+
+/// Tab label worth showing beside an agent: only when its space has several
+/// tabs or the tab was named by the user.
+fn agent_tab_label<'a>(
+    snapshot: &ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+    tab: Option<&'a crate::protocol::ClientShellTab>,
+) -> Option<&'a str> {
+    let tab_count = snapshot
+        .tabs
+        .iter()
+        .filter(|candidate| candidate.workspace_id == agent.workspace_id)
+        .count();
+    tab.filter(|tab| tab_count > 1 || tab.custom_label)
+        .map(|tab| tab.label.as_str())
+}
+
+fn agent_display_label(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+    agent
+        .display_agent
+        .as_deref()
+        .or(agent.name.as_deref())
+        .or(agent.agent.as_deref())
+        .or(agent.title.as_deref())
 }
 
 pub(super) fn render_agent_row(
@@ -370,6 +407,290 @@ pub(super) fn render_agent_row(
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
+        );
+    }
+}
+
+/// Collapse key of a space in the grouped agent panel. It shares the client's
+/// per-endpoint collapsed-group set and its persistence with worktree groups;
+/// the prefix keeps it apart from worktree keys.
+pub(super) fn agent_group_key(workspace_id: &str) -> String {
+    format!("agents:{workspace_id}")
+}
+
+/// Where a run of grouped agent lines comes from.
+pub(super) struct GroupedAgentSource<'a> {
+    pub(super) endpoint_id: &'a ClientEndpointId,
+    /// Machine label prefixed to space headers when several machines are shown.
+    pub(super) machine: Option<&'a str>,
+    pub(super) stale: bool,
+    /// Whether this endpoint's focused agent is the focused agent on screen.
+    pub(super) active: bool,
+}
+
+pub(super) struct GroupedAgentLine {
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) stale: bool,
+    pub(super) kind: GroupedAgentLineKind,
+}
+
+pub(super) enum GroupedAgentLineKind {
+    /// Space row; followed by its agents unless collapsed.
+    Header {
+        workspace_id: String,
+        label: String,
+        agent_count: usize,
+        status: crate::api::schema::AgentStatus,
+        collapsed: bool,
+    },
+    Agent {
+        pane_id: String,
+        status: crate::api::schema::AgentStatus,
+        focused: bool,
+        text: String,
+    },
+}
+
+/// Status a space header shows for its agents, most urgent first.
+fn grouped_rollup_priority(status: crate::api::schema::AgentStatus) -> u8 {
+    use crate::api::schema::AgentStatus;
+    match status {
+        AgentStatus::Working => 4,
+        AgentStatus::Blocked => 3,
+        AgentStatus::Done => 2,
+        AgentStatus::Idle => 1,
+        AgentStatus::Unknown => 0,
+    }
+}
+
+/// Append one header per space that owns any of `agents` (in space order),
+/// followed by its agents unless the space is collapsed.
+pub(super) fn push_grouped_agent_lines(
+    lines: &mut Vec<GroupedAgentLine>,
+    source: GroupedAgentSource<'_>,
+    snapshot: &ClientShellSnapshot,
+    agents: &[&crate::protocol::ClientShellAgent],
+    collapsed_groups: Option<&HashSet<String>>,
+) {
+    for workspace in &snapshot.workspaces {
+        let members = agents
+            .iter()
+            .filter(|agent| agent.workspace_id == workspace.workspace_id)
+            .collect::<Vec<_>>();
+        let Some(status) = members
+            .iter()
+            .map(|agent| agent.agent_status)
+            .max_by_key(|status| grouped_rollup_priority(*status))
+        else {
+            continue;
+        };
+        let collapsed = collapsed_groups
+            .is_some_and(|groups| groups.contains(&agent_group_key(&workspace.workspace_id)));
+        lines.push(GroupedAgentLine {
+            endpoint_id: source.endpoint_id.clone(),
+            stale: source.stale,
+            kind: GroupedAgentLineKind::Header {
+                workspace_id: workspace.workspace_id.clone(),
+                label: source.machine.map_or_else(
+                    || workspace.label.clone(),
+                    |machine| format!("{machine} · {}", workspace.label),
+                ),
+                agent_count: members.len(),
+                status,
+                collapsed,
+            },
+        });
+        if collapsed {
+            continue;
+        }
+        lines.extend(members.into_iter().map(|agent| GroupedAgentLine {
+            endpoint_id: source.endpoint_id.clone(),
+            stale: source.stale,
+            kind: GroupedAgentLineKind::Agent {
+                pane_id: agent.pane_id.clone(),
+                status: agent.agent_status,
+                focused: agent.focused && source.active,
+                text: grouped_agent_text(snapshot, agent),
+            },
+        }));
+    }
+}
+
+/// `tab · agent · custom state label`, skipping parts that carry no information.
+/// The status word itself is left to the colored indicator.
+fn grouped_agent_text(
+    snapshot: &ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+) -> String {
+    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
+    let custom_state = agent
+        .state_labels
+        .iter()
+        .find(|(state, _)| state == status_text(agent.agent_status))
+        .map(|(_, label)| label.as_str());
+    [
+        agent_tab_label(snapshot, agent, tab),
+        agent_display_label(agent),
+        custom_state,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
+/// Render grouped agent lines into `body`: one blank row separates spaces,
+/// agents sit directly under their space header.
+pub(super) fn render_grouped_agent_list(
+    buffer: &mut Buffer,
+    body: Rect,
+    lines: &[GroupedAgentLine],
+    empty_message: Option<&str>,
+    config: &ClientShellConfig,
+    agent_scroll: &mut usize,
+    selected_workspace: Option<&WorkspaceNavigationTarget>,
+    endpoint_hits: bool,
+    hits: &mut ShellHitMap,
+) {
+    let row_heights = vec![1; lines.len()];
+    let gaps = grouped_line_gaps(lines);
+    render_agent_list_body(
+        buffer,
+        body,
+        lines,
+        &row_heights,
+        &gaps,
+        empty_message,
+        config,
+        agent_scroll,
+        hits,
+        |buffer, rect, line, hits| {
+            render_grouped_agent_line(
+                buffer,
+                rect,
+                line,
+                config,
+                selected_workspace,
+                endpoint_hits,
+                hits,
+            );
+        },
+    );
+}
+
+pub(super) fn grouped_line_gaps(lines: &[GroupedAgentLine]) -> Vec<u16> {
+    (0..lines.len())
+        .map(|index| {
+            u16::from(
+                lines
+                    .get(index + 1)
+                    .is_some_and(|next| matches!(next.kind, GroupedAgentLineKind::Header { .. })),
+            )
+        })
+        .collect()
+}
+
+fn render_grouped_agent_line(
+    buffer: &mut Buffer,
+    rect: Rect,
+    line: &GroupedAgentLine,
+    config: &ClientShellConfig,
+    selected_workspace: Option<&WorkspaceNavigationTarget>,
+    endpoint_hits: bool,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    let width = rect.width as usize;
+    match &line.kind {
+        GroupedAgentLineKind::Header {
+            workspace_id,
+            label,
+            agent_count,
+            status,
+            collapsed,
+        } => {
+            if selected_workspace
+                .is_some_and(|target| target.matches(&line.endpoint_id, workspace_id))
+            {
+                buffer.set_style(
+                    rect,
+                    Style::default().bg(super::render::sidebar::workspace_selection_background(
+                        palette,
+                    )),
+                );
+            }
+            let icon = status_icon(*status, config.status_indicators);
+            let count = format!(" ({agent_count})");
+            let reserved = 2 + display_width(&count) + 1 + display_width(icon);
+            let spans = vec![
+                Span::styled(
+                    if *collapsed { "▸" } else { "▾" },
+                    Style::default().fg(palette.accent),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    crate::ui::truncate_end(label, width.saturating_sub(reserved)),
+                    Style::default()
+                        .fg(palette.text)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(count, Style::default().fg(palette.overlay0)),
+                Span::raw(" "),
+                Span::styled(icon, Style::default().fg(status_color(*status, palette))),
+            ];
+            Paragraph::new(Line::from(spans)).render(rect, buffer);
+            hits.agent_groups.push((
+                rect,
+                line.endpoint_id.clone(),
+                agent_group_key(workspace_id),
+            ));
+        }
+        GroupedAgentLineKind::Agent {
+            pane_id,
+            status,
+            focused,
+            text,
+        } => {
+            let color = status_color(*status, palette);
+            let text_style = if *focused {
+                Style::default().fg(color)
+            } else {
+                Style::default().fg(color).add_modifier(Modifier::DIM)
+            };
+            let spans = vec![
+                Span::raw("  "),
+                Span::styled(
+                    status_icon(*status, config.status_indicators),
+                    Style::default().fg(color),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    crate::ui::truncate_end(text, width.saturating_sub(4)),
+                    text_style,
+                ),
+            ];
+            let row_style = if *focused {
+                Style::default().bg(palette.active_row_bg)
+            } else {
+                Style::default()
+            };
+            Paragraph::new(Line::from(spans))
+                .style(row_style)
+                .render(rect, buffer);
+            if endpoint_hits {
+                hits.endpoint_agents
+                    .push((rect, line.endpoint_id.clone(), pane_id.clone()));
+            } else {
+                hits.agents.push((rect, pane_id.clone()));
+            }
+        }
+    }
+    if line.stale {
+        buffer.set_style(
+            rect,
+            Style::default()
+                .fg(palette.overlay0)
+                .add_modifier(Modifier::DIM),
         );
     }
 }
