@@ -202,7 +202,8 @@ impl Tab {
     }
 
     pub fn set_custom_name(&mut self, name: String) {
-        self.custom_name = Some(name);
+        // A blank name clears the manual label so the tab returns to its automatic one.
+        self.custom_name = (!name.trim().is_empty()).then_some(name);
     }
 
     pub fn split_focused_command(
