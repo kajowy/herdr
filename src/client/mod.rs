@@ -53,6 +53,7 @@ use transport::*;
 #[cfg(test)]
 pub(crate) use shell::{ClientShellConfig, ClientShellState};
 pub use startup::{run_client, run_terminal_attach};
+pub(crate) use terminal_sessions::open_terminal_session_stream;
 pub use terminal_sessions::{run_terminal_session_control, run_terminal_session_observe};
 
 #[cfg(not(windows))]

@@ -1143,6 +1143,13 @@ impl App {
                     "pane.graphics.stream requires the streaming socket transport",
                 );
             }
+            Method::TerminalAttachStream(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "stream_transport_required",
+                    "terminal.attach_stream requires the streaming socket transport",
+                );
+            }
             Method::PaneGraphicsStreamSet(params) => {
                 return self.handle_pane_graphics_stream_set(request.id, params);
             }
