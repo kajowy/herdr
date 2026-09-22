@@ -46,10 +46,8 @@ pub(super) fn render_expanded(
     buffer: &mut Buffer,
     area: Rect,
     agent_view_label: Option<&str>,
-    endpoints: &[ClientShellEndpoint],
-    active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
-    agent_scroll: &mut usize,
+    state: &mut super::render::ShellRenderState<'_>,
     hits: &mut ShellHitMap,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
@@ -58,10 +56,35 @@ pub(super) fn render_expanded(
         agent_view_label,
         config,
         hits,
+        true,
     ) {
         return;
     }
+    let (endpoints, active_endpoint_id) = (state.endpoints, state.active_endpoint_id);
+    if config.agent_panel_sort == crate::config::AgentPanelSortConfig::Grouped {
+        let lines = grouped_lines(endpoints, active_endpoint_id, |endpoint_id| {
+            super::endpoint_sidebar::collapsed_groups_for_endpoint(state, endpoint_id)
+        });
+        super::agent_sidebar::render_grouped_agent_list(
+            buffer,
+            Rect::new(
+                area.x,
+                area.y.saturating_add(3),
+                area.width,
+                area.height.saturating_sub(3),
+            ),
+            &lines,
+            agent_view_label.map(|_| " no matching agents"),
+            config,
+            state.agent_scroll,
+            state.selected_workspace_id,
+            true,
+            hits,
+        );
+        return;
+    }
     let rows = agent_rows(endpoints, active_endpoint_id, config);
+    let agent_scroll = &mut *state.agent_scroll;
     super::agent_sidebar::render_agent_list(
         buffer,
         area,
@@ -87,6 +110,41 @@ pub(super) fn render_expanded(
     );
 }
 
+/// Grouped agent panel lines across machines: each machine's spaces in order,
+/// limited to the agents the aggregate agent view keeps.
+fn grouped_lines<'c>(
+    endpoints: &[ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    collapsed_groups: impl Fn(&ClientEndpointId) -> Option<&'c HashSet<String>>,
+) -> Vec<super::agent_sidebar::GroupedAgentLine> {
+    let rows = super::aggregate_navigation::aggregate_agent_rows(
+        endpoints,
+        active_endpoint_id,
+        crate::config::AgentPanelSortConfig::Grouped,
+    );
+    let mut lines = Vec::new();
+    for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
+        let agents = rows
+            .iter()
+            .filter(|row| row.endpoint.endpoint_index == endpoint.endpoint_index)
+            .map(|row| row.agent)
+            .collect::<Vec<_>>();
+        super::agent_sidebar::push_grouped_agent_lines(
+            &mut lines,
+            super::agent_sidebar::GroupedAgentSource {
+                endpoint_id: endpoint.endpoint_id,
+                machine: Some(endpoint.label),
+                stale: endpoint.stale(),
+                active: endpoint.endpoint_id == active_endpoint_id,
+            },
+            endpoint.snapshot,
+            &agents,
+            collapsed_groups(endpoint.endpoint_id),
+        );
+    }
+    lines
+}
+
 impl ClientShellState {
     pub(super) fn reveal_endpoint_agent(
         &mut self,
@@ -95,6 +153,29 @@ impl ClientShellState {
         body_height: u16,
     ) {
         if body_height == 0 {
+            return;
+        }
+        if self.config.agent_panel_sort == crate::config::AgentPanelSortConfig::Grouped {
+            let lines = grouped_lines(&self.endpoints, &self.active_endpoint_id, |endpoint_id| {
+                self.collapsed_groups_for_endpoint(endpoint_id)
+            });
+            let Some(target) = lines.iter().position(|line| {
+                &line.endpoint_id == endpoint_id
+                    && matches!(
+                        &line.kind,
+                        super::agent_sidebar::GroupedAgentLineKind::Agent { pane_id: candidate, .. }
+                            if candidate == pane_id
+                    )
+            }) else {
+                return;
+            };
+            self.agent_scroll = super::scroll::list_scroll_start_to_reveal(
+                &vec![1; lines.len()],
+                &super::agent_sidebar::grouped_line_gaps(&lines),
+                body_height,
+                self.agent_scroll,
+                target,
+            );
             return;
         }
         let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);
