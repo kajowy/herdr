@@ -23,6 +23,8 @@ use crate::ipc::{
 };
 use crate::server::shutdown::{ServerStop, ShutdownReason};
 
+mod terminal_attach_stream;
+
 #[cfg(test)]
 mod subscription_socket_tests;
 
@@ -425,6 +427,21 @@ fn handle_connection_with_stop(
             }
             Ok(())
         }
+        Method::TerminalAttachStream(params) => {
+            let result = terminal_attach_stream::serve(stream, request_id.clone(), params, running);
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    "stream_closed",
+                    changes_ui,
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
+            }
+            result
+        }
         Method::EventsSubscribe(params) => {
             let result = stream_subscriptions(
                 stream,
@@ -705,6 +722,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
+        Method::TerminalAttachStream(_) => "terminal.attach_stream",
     }
 }
 

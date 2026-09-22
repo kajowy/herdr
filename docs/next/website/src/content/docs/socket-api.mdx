@@ -108,12 +108,28 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
 | Events | `events.subscribe`, `events.wait` |
+| Terminal | `terminal.attach_stream` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
 
 `agent.wait` is server-owned and event-driven. It pins the resolved pane occupant so a replacement cannot satisfy the wait. `agent.prompt` accepts an optional `wait` object with `until` and `timeout_ms`; this submits the prompt and starts the wait in one request, avoiding a race between separate calls. If the resolved agent is already `blocked`, `agent.prompt` returns `agent_blocked` without sending input or starting the wait.
 
 `workspace.move_block` atomically moves the ordered `workspace_ids` before `before_workspace_id`; omit the anchor to move the block to the end. The ids must be unique and the anchor cannot be part of the block. The response contains the authoritative ordered workspace list.
+
+`terminal.attach_stream` turns a dedicated socket into a live terminal view.
+Send `terminal_id`, an optional `mode` (`interactive`, the default, or `view`),
+optional `cols` and `rows` (default 80x24), and `takeover`. An interactive
+stream becomes the terminal's single controller: its size drives the PTY, and a
+second interactive stream fails with `terminal_busy` unless it sets
+`takeover: true`, which detaches the previous controller. A view stream observes
+without limit and its size only sets its own render area. Unknown terminals
+return `terminal_not_found`. On success Herdr replies with
+`attach_stream_started` (`terminal_id`, `cols`, `rows`), then streams NDJSON
+events: a `snapshot` first, then `snapshot` or `frame` redraws with base64 ANSI
+`data`, `seq`, `cols`, and `rows`, and a final `detached` with a `reason`. Send
+`{"type":"input","data":"<base64>"}`, `{"type":"resize","cols":100,"rows":30}`,
+or `{"type":"detach"}`; rejected commands, such as input on a view stream
+(`input_not_allowed`), produce an `error` event and keep the stream open.
 
 `session.snapshot` returns a one-time bootstrap snapshot for clients that keep
 their own local runtime cache. The response includes version/protocol metadata,
