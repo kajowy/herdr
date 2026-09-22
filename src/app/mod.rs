@@ -192,7 +192,9 @@ fn agent_panel_sort_from_config(
     sort: crate::config::AgentPanelSortConfig,
 ) -> state::AgentPanelSort {
     match sort {
-        crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
+        // Grouped is a client presentation of the space order.
+        crate::config::AgentPanelSortConfig::Spaces
+        | crate::config::AgentPanelSortConfig::Grouped => state::AgentPanelSort::Spaces,
         crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
     }
 }

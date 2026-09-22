@@ -4,7 +4,9 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
+pub(in crate::client::shell) fn workspace_selection_background(
+    palette: &Palette,
+) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
         palette.active_row_bg
     } else {
@@ -211,6 +213,11 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    if config.agent_panel_sort == crate::config::AgentPanelSortConfig::Grouped {
+        render_grouped_agent_sidebar(buffer, area, snapshot, config, state, hits);
+        render_sidebar_collapse_toggle(buffer, area, palette, hits);
+        return;
+    }
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
@@ -375,59 +382,15 @@ pub(crate) fn render_sidebar(
         );
     }
 
-    let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            5.min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
-        put_text(
+        render_space_actions(
             buffer,
-            workspace_area.x,
-            footer_y,
-            workspace_area.width,
-            " new",
-            Style::default().fg(palette.overlay0),
+            workspace_area,
+            workspace_area.bottom().saturating_sub(1),
+            snapshot,
+            config,
+            hits,
         );
-        let attention = super::super::global_menu::global_menu_attention(snapshot);
-        let launcher_width = if attention { 8 } else { 6 }.min(workspace_area.width);
-        hits.global_launcher = Rect::new(
-            workspace_area.right().saturating_sub(launcher_width),
-            footer_y,
-            launcher_width,
-            1,
-        );
-        if attention {
-            let start_x = workspace_area.right().saturating_sub(6);
-            put_text(
-                buffer,
-                start_x,
-                footer_y,
-                2,
-                "● ",
-                Style::default()
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            );
-            put_text(
-                buffer,
-                start_x.saturating_add(2),
-                footer_y,
-                4,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
-        } else {
-            put_right_text(
-                buffer,
-                workspace_area,
-                footer_y,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
-        }
     }
 
     super::render_agent_panel(
@@ -438,7 +401,142 @@ pub(crate) fn render_sidebar(
         state.agent_scroll,
         hits,
     );
+    render_sidebar_collapse_toggle(buffer, area, palette, hits);
+}
 
+/// Grouped agent mode: the agent tree takes the whole sidebar and the spaces
+/// list's `new` and `menu` actions move onto the tree's top row.
+fn render_grouped_agent_sidebar(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    use crate::client::shell::agent_sidebar;
+
+    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    if content.is_empty() {
+        return;
+    }
+    if config.mouse_capture {
+        render_space_actions(buffer, content, content.y, snapshot, config, hits);
+    }
+    let view_label = snapshot.agent_view_label.as_deref();
+    if !agent_sidebar::render_agent_panel_header(buffer, content, view_label, config, hits, false) {
+        return;
+    }
+    let agents = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+        .iter()
+        .filter_map(|pane_id| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == *pane_id)
+        })
+        .collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    agent_sidebar::push_grouped_agent_lines(
+        &mut lines,
+        agent_sidebar::GroupedAgentSource {
+            endpoint_id: &ClientEndpointId::Local,
+            machine: None,
+            stale: false,
+            active: true,
+        },
+        snapshot,
+        &agents,
+        Some(state.collapsed_groups),
+    );
+    agent_sidebar::render_grouped_agent_list(
+        buffer,
+        Rect::new(
+            content.x,
+            content.y.saturating_add(2),
+            content.width,
+            content.height.saturating_sub(2),
+        ),
+        &lines,
+        view_label.map(|_| " no matching agents"),
+        config,
+        state.agent_scroll,
+        state.selected_workspace_id,
+        false,
+        hits,
+    );
+}
+
+/// The `new` space button (left) and global `menu` launcher (right) on row
+/// `footer_y` of `workspace_area`.
+fn render_space_actions(
+    buffer: &mut Buffer,
+    workspace_area: Rect,
+    footer_y: u16,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    hits.new_workspace = Rect::new(
+        workspace_area.x,
+        footer_y,
+        5.min(workspace_area.width),
+        u16::from(workspace_area.height > 0),
+    );
+    put_text(
+        buffer,
+        workspace_area.x,
+        footer_y,
+        workspace_area.width,
+        " new",
+        Style::default().fg(palette.overlay0),
+    );
+    let attention = super::super::global_menu::global_menu_attention(snapshot);
+    let launcher_width = if attention { 8 } else { 6 }.min(workspace_area.width);
+    hits.global_launcher = Rect::new(
+        workspace_area.right().saturating_sub(launcher_width),
+        footer_y,
+        launcher_width,
+        1,
+    );
+    if attention {
+        let start_x = workspace_area.right().saturating_sub(6);
+        put_text(
+            buffer,
+            start_x,
+            footer_y,
+            2,
+            "● ",
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        put_text(
+            buffer,
+            start_x.saturating_add(2),
+            footer_y,
+            4,
+            "menu",
+            Style::default().fg(palette.overlay0),
+        );
+    } else {
+        put_right_text(
+            buffer,
+            workspace_area,
+            footer_y,
+            "menu",
+            Style::default().fg(palette.overlay0),
+        );
+    }
+}
+
+fn render_sidebar_collapse_toggle(
+    buffer: &mut Buffer,
+    area: Rect,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),

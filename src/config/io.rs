@@ -150,7 +150,8 @@ impl Config {
         };
 
         match deserialize_with_ignored::<Config, _>(toml::Deserializer::new(&content)) {
-            Ok((config, ignored_keys)) => {
+            Ok((mut config, ignored_keys)) => {
+                config.ui.apply_legacy_agent_panel_scope();
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(&content);
                 diagnostics.extend(unknown_config_key_diagnostics(
@@ -341,7 +342,10 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         "ui config",
         &mut diagnostics,
         &mut invalid_sections,
-        |section| config.ui = section,
+        |mut section: super::model::UiConfig| {
+            section.apply_legacy_agent_panel_scope();
+            config.ui = section;
+        },
     );
     load_live_section(
         table,
@@ -1020,6 +1024,51 @@ agent_panel_sort = "priority"
         assert_eq!(
             loaded.config.ui.agent_panel_sort,
             super::super::AgentPanelSortConfig::Priority
+        );
+    }
+
+    #[test]
+    fn load_live_config_maps_legacy_grouped_scope_to_grouped_sort() {
+        let loaded = load_live_config_from_str(
+            r#"
+[ui]
+agent_panel_scope = "grouped"
+agent_panel_sort = "priority"
+"#,
+        )
+        .unwrap();
+
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert!(loaded.invalid_sections.is_empty());
+        assert_eq!(
+            loaded.config.ui.agent_panel_sort,
+            super::super::AgentPanelSortConfig::Grouped
+        );
+    }
+
+    #[test]
+    fn startup_config_maps_legacy_grouped_scope_to_grouped_sort() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-config-legacy-grouped-scope-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[ui]\nagent_panel_scope = \"grouped\"\nagent_panel_sort = \"priority\"\n",
+        )
+        .unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_file(path);
+
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(
+            loaded.config.ui.agent_panel_sort,
+            super::super::AgentPanelSortConfig::Grouped
         );
     }
 

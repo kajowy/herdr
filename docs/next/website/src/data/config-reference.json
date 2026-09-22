@@ -1038,10 +1038,11 @@
           "key": "ui.agent_panel_sort",
           "type": "enum",
           "default": "\"spaces\"",
-          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\".",
+          "description": "Agent sidebar mode. \"spaces\" keeps agents in space order, \"priority\" sorts them by attention, and \"grouped\" shows a collapsible tree of agents under their space and hides the spaces list. \"workspaces\" is accepted as an alias for \"spaces\"; the retired agent_panel_scope = \"grouped\" also selects \"grouped\".",
           "values": [
             "spaces",
-            "priority"
+            "priority",
+            "grouped"
           ]
         },
         {

@@ -1,7 +1,7 @@
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 
-fn collapsed_groups_for_endpoint<'a>(
+pub(super) fn collapsed_groups_for_endpoint<'a>(
     state: &'a ShellRenderState<'_>,
     endpoint_id: &ClientEndpointId,
 ) -> Option<&'a HashSet<String>> {
@@ -541,10 +541,8 @@ pub(super) fn render_expanded(
         buffer,
         detail_area,
         active_snapshot.and_then(|snapshot| snapshot.agent_view_label.as_deref()),
-        state.endpoints,
-        state.active_endpoint_id,
         config,
-        state.agent_scroll,
+        state,
         hits,
     );
     hits.sidebar_toggle = Rect::new(

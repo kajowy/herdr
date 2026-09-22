@@ -99,6 +99,19 @@ pub enum AgentPanelSortConfig {
     #[serde(alias = "workspaces")]
     Spaces,
     Priority,
+    /// Collapsible tree of agents grouped under their space.
+    Grouped,
+}
+
+impl AgentPanelSortConfig {
+    /// Return the mode the agent panel header toggle switches to.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Spaces => Self::Priority,
+            Self::Priority => Self::Grouped,
+            Self::Grouped => Self::Spaces,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -106,6 +119,7 @@ pub enum AgentPanelSortConfig {
 enum LegacyAgentPanelScopeConfig {
     Current,
     All,
+    Grouped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -959,9 +973,11 @@ pub struct UiConfig {
     /// Format for the outer terminal window title. Empty leaves the title alone.
     /// Default: "{hostname}: {workspace}".
     pub window_title: String,
-    /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
+    /// Agent sidebar mode. Saved values are "spaces", "priority", or "grouped". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Retired setting that Herdr wrote before the workspace filter was removed.
+    /// `"grouped"` still selects the grouped agent panel; see
+    /// [`UiConfig::apply_legacy_agent_panel_scope`].
     #[serde(rename = "agent_panel_scope")]
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
@@ -1156,6 +1172,15 @@ impl Default for WorktreesConfig {
     fn default() -> Self {
         Self {
             directory: "~/.herdr/worktrees".into(),
+        }
+    }
+}
+
+impl UiConfig {
+    /// Map the retired `agent_panel_scope = "grouped"` onto the grouped agent panel.
+    pub(super) fn apply_legacy_agent_panel_scope(&mut self) {
+        if self._legacy_agent_panel_scope == Some(LegacyAgentPanelScopeConfig::Grouped) {
+            self.agent_panel_sort = AgentPanelSortConfig::Grouped;
         }
     }
 }
@@ -1433,6 +1458,49 @@ agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+    }
+
+    #[test]
+    fn agent_panel_sort_config_parses_grouped_and_cycles_three_modes() {
+        let toml = r#"
+[ui]
+agent_panel_sort = "grouped"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Grouped);
+
+        assert_eq!(
+            AgentPanelSortConfig::Spaces.next(),
+            AgentPanelSortConfig::Priority
+        );
+        assert_eq!(
+            AgentPanelSortConfig::Priority.next(),
+            AgentPanelSortConfig::Grouped
+        );
+        assert_eq!(
+            AgentPanelSortConfig::Grouped.next(),
+            AgentPanelSortConfig::Spaces
+        );
+    }
+
+    #[test]
+    fn legacy_agent_panel_scope_grouped_selects_grouped_sort() {
+        let toml = r#"
+[ui]
+agent_panel_scope = "grouped"
+agent_panel_sort = "priority"
+"#;
+        let mut config: Config = toml::from_str(toml).unwrap();
+        config.ui.apply_legacy_agent_panel_scope();
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Grouped);
+
+        for scope in ["current", "all"] {
+            let toml =
+                format!("[ui]\nagent_panel_scope = \"{scope}\"\nagent_panel_sort = \"priority\"\n");
+            let mut config: Config = toml::from_str(&toml).unwrap();
+            config.ui.apply_legacy_agent_panel_scope();
+            assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Priority);
+        }
     }
 
     #[test]
