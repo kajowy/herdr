@@ -1669,4 +1669,19 @@ mod tests {
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
         ws.assert_invariants_for_test();
     }
+
+    #[test]
+    fn blank_tab_rename_clears_custom_name_back_to_auto_label() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("TA-588 #42".into());
+        assert_eq!(ws.tab_display_name(0).as_deref(), Some("TA-588 #42"));
+
+        ws.tabs[0].set_custom_name("  ".into());
+        assert!(ws.tabs[0].is_auto_named());
+        assert_eq!(ws.tab_display_name(0).as_deref(), Some("1"));
+
+        ws.tabs[0].set_custom_name("build".into());
+        ws.tabs[0].set_custom_name(String::new());
+        assert!(ws.tabs[0].is_auto_named());
+    }
 }
