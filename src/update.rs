@@ -72,6 +72,7 @@ pub struct Version {
 impl Version {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.strip_prefix('v').unwrap_or(s);
+        let s = s.split('+').next().unwrap_or(s);
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
             return None;
@@ -84,7 +85,7 @@ impl Version {
     }
 
     pub fn current() -> Self {
-        Self::parse(crate::build_info::BASE_VERSION).expect("invalid CARGO_PKG_VERSION")
+        Self::parse(&crate::build_info::upstream_version()).expect("invalid CARGO_PKG_VERSION")
     }
 }
 
@@ -1372,7 +1373,10 @@ fn runtime_matches_release(status: &crate::api::RuntimeStatus, release: &Release
     let protocol_matches = release
         .target_protocol
         .is_none_or(|protocol| status.protocol == Some(protocol));
-    let version_matches = status.version.as_deref() == Some(release.label());
+    let version_matches = status
+        .version
+        .as_deref()
+        .is_some_and(|version| crate::build_info::version_matches(version, release.label()));
     protocol_matches && version_matches
 }
 
@@ -1712,8 +1716,12 @@ fn wait_for_running_server_protocol_at(
         {
             let protocol_matches =
                 expected_protocol.is_none_or(|protocol| status.protocol == Some(protocol));
-            let version_matches =
-                expected_version.is_none_or(|version| status.version.as_deref() == Some(version));
+            let version_matches = expected_version.is_none_or(|expected| {
+                status
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| crate::build_info::version_matches(version, expected))
+            });
             if protocol_matches && version_matches {
                 return Ok(());
             }
@@ -2110,6 +2118,9 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    if let Some(reason) = crate::build_info::fork_update_refusal() {
+        return Err(reason.into());
+    }
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {
@@ -2243,6 +2254,10 @@ fn print_outdated_integration_notice_with_updated_binary(updated_exe: &Path) {
 /// Runs in a background thread at startup.
 pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
     crate::logging::update_check_started();
+    if let Some(reason) = crate::build_info::fork_update_refusal() {
+        crate::logging::update_check_failed(reason);
+        return;
+    }
     if let Ok(version) = env::var(FAKE_UPDATE_VERSION_ENV) {
         let version = version.trim();
         if !version.is_empty() {
@@ -2584,6 +2599,28 @@ mod tests {
         let path = Path::new("/opt/mise-tools/installs/herdr/0.6.6/bin/herdr");
 
         assert!(is_mise_managed_exe_path(path));
+    }
+
+    #[test]
+    fn fork_build_refuses_self_update() {
+        let err = self_update(SelfUpdateOptions::default()).unwrap_err();
+
+        assert_eq!(
+            err,
+            "self-update is disabled for kajowy fork builds; update by rebuilding from kajowy/herdr master"
+        );
+    }
+
+    #[test]
+    fn fork_build_background_check_advertises_nothing() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(FAKE_UPDATE_VERSION_ENV, "99.0.0");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        auto_update(tx);
+        std::env::remove_var(FAKE_UPDATE_VERSION_ENV);
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -3397,6 +3434,11 @@ mod tests {
             patch: 0,
         };
         assert_eq!(v.to_string(), "0.1.0");
+    }
+
+    #[test]
+    fn version_parse_ignores_build_metadata() {
+        assert_eq!(Version::parse("0.9.1+kajowy.1"), Version::parse("0.9.1"));
     }
 
     #[test]

@@ -527,8 +527,9 @@ struct RemoteManifestReleaseRef<'a> {
     sha256: &'a BTreeMap<String, String>,
 }
 
+/// Remote installs resolve upstream release assets and layouts, so the fork marker is dropped.
 fn current_version() -> String {
-    crate::build_info::version()
+    crate::build_info::upstream_version()
 }
 
 fn current_channel() -> &'static str {

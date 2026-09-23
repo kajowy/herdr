@@ -251,11 +251,10 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
             crate::protocol::PROTOCOL_VERSION
         )));
     }
-    if manifest
-        .expected_version
-        .as_deref()
-        .is_some_and(|version| version != crate::build_info::version())
-    {
+    if handoff_version_incompatible(
+        manifest.expected_version.as_deref(),
+        &crate::build_info::version(),
+    ) {
         return Err(io::Error::other(format!(
             "handoff expected herdr v{}, but this server is v{}",
             manifest.expected_version.as_deref().unwrap_or("unknown"),
@@ -270,6 +269,12 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
         fds,
         stream,
     })
+}
+
+/// A handoff peer may report the same release with different build metadata.
+#[cfg(unix)]
+fn handoff_version_incompatible(expected: Option<&str>, current: &str) -> bool {
+    expected.is_some_and(|expected| !crate::build_info::version_matches(expected, current))
 }
 
 #[cfg(unix)]
@@ -539,6 +544,23 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
         }
+    }
+
+    #[test]
+    fn handoff_accepts_an_upstream_peer_version() {
+        assert!(!handoff_version_incompatible(
+            Some("0.9.1"),
+            "0.9.1+kajowy.1"
+        ));
+        assert!(!handoff_version_incompatible(
+            Some("0.9.1+kajowy.1"),
+            "0.9.1"
+        ));
+        assert!(!handoff_version_incompatible(None, "0.9.1+kajowy.1"));
+        assert!(handoff_version_incompatible(
+            Some("0.9.0"),
+            "0.9.1+kajowy.1"
+        ));
     }
 
     #[test]
