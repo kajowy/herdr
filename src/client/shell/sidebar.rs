@@ -218,10 +218,9 @@ pub(crate) fn render_sidebar(
         render_sidebar_collapse_toggle(buffer, area, palette, hits);
         return;
     }
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let sizing = crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split);
+    let (workspace_area, detail_area) = crate::ui::expanded_sidebar_sections(area, sizing);
+    hits.sidebar_section_divider = crate::ui::sidebar_section_divider_rect(area, sizing);
     put_text(
         buffer,
         workspace_area.x,

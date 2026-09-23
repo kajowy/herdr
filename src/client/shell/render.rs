@@ -242,6 +242,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_focused_tab: &'a mut bool,
     pub(super) sidebar_collapsed: bool,
     pub(super) sidebar_section_split: f32,
+    pub(super) sidebar_section_split_manual: bool,
+    pub(super) machines_section_collapsed: bool,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
@@ -328,6 +330,7 @@ pub(super) fn render_shell(
         hits.agent_sort_toggle = Rect::default();
         hits.new_workspace = Rect::default();
         hits.machines.clear();
+        hits.machines_section_toggle = Rect::default();
         hits.workspaces.clear();
         hits.agents.clear();
         hits.endpoint_agents.clear();

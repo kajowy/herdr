@@ -27,9 +27,28 @@ pub(crate) struct AgentPanelEntry {
     pub tokens: std::collections::HashMap<String, String>,
 }
 
-fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
+/// Smallest usable height for the top sidebar section.
+const SIDEBAR_SECTION_MIN_ROWS: u16 = 3;
+/// Share of the sidebar a content-fitted top section may never exceed.
+const SIDEBAR_SECTION_FIT_MAX_SHARE: f32 = 0.6;
+
+/// How tall the top sidebar section should be.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SidebarSectionSizing {
+    /// A dragged divider pins the section to a fraction of the sidebar height.
+    Ratio(f32),
+    /// The section takes the rows its content needs, within a usable range.
+    Fit(u16),
+    /// Only the section header stays visible.
+    Collapsed,
+}
+
+fn sidebar_section_heights(total_height: u16, sizing: SidebarSectionSizing) -> (u16, u16) {
     if total_height == 0 {
         return (0, 0);
+    }
+    if sizing == SidebarSectionSizing::Collapsed {
+        return (1, total_height.saturating_sub(1));
     }
     if total_height < 6 {
         let workspace_height = total_height.div_ceil(2);
@@ -39,21 +58,33 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
         );
     }
 
-    let workspace_height = ((total_height as f32) * split_ratio.clamp(0.1, 0.9)).round() as u16;
-    let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
+    let workspace_height = match sizing {
+        SidebarSectionSizing::Ratio(split_ratio) => {
+            ((total_height as f32) * split_ratio.clamp(0.1, 0.9)).round() as u16
+        }
+        SidebarSectionSizing::Fit(content_height) => content_height.min(
+            (((total_height as f32) * SIDEBAR_SECTION_FIT_MAX_SHARE).round() as u16)
+                .max(SIDEBAR_SECTION_MIN_ROWS),
+        ),
+        SidebarSectionSizing::Collapsed => 1,
+    };
+    let workspace_height = workspace_height.clamp(
+        SIDEBAR_SECTION_MIN_ROWS,
+        total_height.saturating_sub(SIDEBAR_SECTION_MIN_ROWS),
+    );
     (
         workspace_height,
         total_height.saturating_sub(workspace_height),
     )
 }
 
-pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
+pub(crate) fn expanded_sidebar_sections(area: Rect, sizing: SidebarSectionSizing) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), Rect::default());
     }
 
-    let (workspace_height, detail_height) = sidebar_section_heights(content.height, split_ratio);
+    let (workspace_height, detail_height) = sidebar_section_heights(content.height, sizing);
     (
         Rect::new(content.x, content.y, content.width, workspace_height),
         Rect::new(
@@ -65,13 +96,13 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     )
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
+pub(crate) fn sidebar_section_divider_rect(area: Rect, sizing: SidebarSectionSizing) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
+    if content.width == 0 || content.height < 6 || sizing == SidebarSectionSizing::Collapsed {
         return Rect::default();
     }
 
-    let (workspace_height, _) = sidebar_section_heights(content.height, split_ratio);
+    let (workspace_height, _) = sidebar_section_heights(content.height, sizing);
     Rect::new(content.x, content.y + workspace_height, content.width, 1)
 }
 
@@ -293,4 +324,56 @@ fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) 
         };
     }
     style
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIDEBAR: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 27,
+        height: 30,
+    };
+
+    #[test]
+    fn dragged_divider_keeps_its_ratio() {
+        let (machines, agents) =
+            expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Ratio(0.5));
+        assert_eq!((machines.height, agents.height), (15, 15));
+        assert_eq!(
+            sidebar_section_divider_rect(SIDEBAR, SidebarSectionSizing::Ratio(0.5)).y,
+            15
+        );
+    }
+
+    #[test]
+    fn fitted_section_takes_only_the_rows_its_content_needs() {
+        let (machines, agents) = expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Fit(5));
+        assert_eq!((machines.height, agents.height), (5, 25));
+    }
+
+    #[test]
+    fn fitted_section_never_exceeds_sixty_percent_of_the_sidebar() {
+        let (machines, agents) = expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Fit(28));
+        assert_eq!((machines.height, agents.height), (18, 12));
+    }
+
+    #[test]
+    fn fitted_section_keeps_a_usable_minimum() {
+        let (machines, _) = expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Fit(1));
+        assert_eq!(machines.height, 3);
+    }
+
+    #[test]
+    fn collapsed_section_keeps_only_its_header_row() {
+        let (machines, agents) =
+            expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Collapsed);
+        assert_eq!((machines.height, agents.height), (1, 29));
+        assert_eq!(
+            sidebar_section_divider_rect(SIDEBAR, SidebarSectionSizing::Collapsed),
+            Rect::default()
+        );
+    }
 }

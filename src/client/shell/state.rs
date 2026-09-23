@@ -84,6 +84,8 @@ pub(super) enum ClientMobileTarget {
 #[derive(Default)]
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
+    /// Header row that folds the whole machines section away.
+    pub(super) machines_section_toggle: Rect,
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
@@ -863,6 +865,7 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_width_manual: bool,
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
+    pub(super) machines_section_collapsed: bool,
     pub(super) agent_panel_sort_manual: bool,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
@@ -1027,6 +1030,7 @@ impl ClientShellState {
             sidebar_width_manual: preferences.sidebar_width.is_some(),
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
+            machines_section_collapsed: preferences.machines_section_collapsed.unwrap_or(false),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
             last_sidebar_divider_click: None,
             chrome_drag: None,
