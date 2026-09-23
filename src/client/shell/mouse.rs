@@ -1992,6 +1992,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if super::contains(self.hits.machines_section_toggle, point) {
+                    self.toggle_machines_section(outcome);
+                    return;
+                }
                 if self.handle_endpoint_machine_click(point, outcome) {
                     return;
                 }

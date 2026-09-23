@@ -235,21 +235,6 @@ pub(super) fn render_expanded(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        " machines",
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
-
     let empty_collapsed_groups = HashSet::new();
 
     enum Row {
@@ -278,15 +263,6 @@ pub(super) fn render_expanded(
             );
         }
     }
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
-    hits.workspace_body = body;
     let row_heights = rows
         .iter()
         .map(|row| match row {
@@ -334,6 +310,57 @@ pub(super) fn render_expanded(
             _ => 0,
         })
         .collect::<Vec<_>>();
+    // Header, every machine and space row, one free row that keeps the drop slot below the last
+    // space reachable, and the footer that carries the new-workspace and menu affordances.
+    let content_height = row_heights
+        .iter()
+        .chain(gaps.iter())
+        .fold(WORKSPACE_HEADER_ROWS.saturating_add(2), |total, rows| {
+            total.saturating_add(*rows)
+        });
+    let sizing = if state.machines_section_collapsed {
+        crate::ui::SidebarSectionSizing::Collapsed
+    } else if state.sidebar_section_split_manual {
+        crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
+    } else {
+        crate::ui::SidebarSectionSizing::Fit(content_height)
+    };
+    let (workspace_area, detail_area) = crate::ui::expanded_sidebar_sections(area, sizing);
+    hits.sidebar_section_divider = crate::ui::sidebar_section_divider_rect(area, sizing);
+    render_machines_header(
+        buffer,
+        workspace_area,
+        state.machines_section_collapsed,
+        state.endpoints,
+        palette,
+    );
+    hits.machines_section_toggle = Rect::new(
+        workspace_area.x,
+        workspace_area.y,
+        workspace_area.width,
+        u16::from(workspace_area.height > 0),
+    );
+    if state.machines_section_collapsed {
+        render_detail_and_toggle(
+            buffer,
+            area,
+            detail_area,
+            active_snapshot,
+            config,
+            state,
+            hits,
+        );
+        return;
+    }
+    let body = Rect::new(
+        workspace_area.x,
+        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+        workspace_area.width,
+        workspace_area
+            .height
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+    );
+    hits.workspace_body = body;
     let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
     let reveal_focus = !body.is_empty() && std::mem::take(state.reveal_focused_workspace);
     if reveal_navigation || reveal_focus {
@@ -537,6 +564,27 @@ pub(super) fn render_expanded(
             }),
         );
     }
+    render_detail_and_toggle(
+        buffer,
+        area,
+        detail_area,
+        active_snapshot,
+        config,
+        state,
+        hits,
+    );
+}
+
+/// Draw the agents panel below the machines section plus the sidebar collapse affordance.
+fn render_detail_and_toggle(
+    buffer: &mut Buffer,
+    area: Rect,
+    detail_area: Rect,
+    active_snapshot: Option<&ClientShellSnapshot>,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
     super::endpoint_agents::render_expanded(
         buffer,
         detail_area,
@@ -557,8 +605,45 @@ pub(super) fn render_expanded(
         hits.sidebar_toggle.y,
         hits.sidebar_toggle.width,
         "«",
-        Style::default().fg(palette.overlay0),
+        Style::default().fg(config.palette.overlay0),
     );
+}
+
+/// Draw the machines section header, with an aggregated status glyph while it is folded.
+fn render_machines_header(
+    buffer: &mut Buffer,
+    rect: Rect,
+    collapsed: bool,
+    endpoints: &[ClientShellEndpoint],
+    palette: &Palette,
+) {
+    let marker = if collapsed { "\u{25b8}" } else { "\u{25be}" };
+    put_text(
+        buffer,
+        rect.x,
+        rect.y,
+        rect.width,
+        &format!(" {marker} machines"),
+        Style::default()
+            .fg(palette.overlay0)
+            .add_modifier(Modifier::BOLD),
+    );
+    if !collapsed {
+        return;
+    }
+    let status = endpoints
+        .iter()
+        .map(|endpoint| endpoint.status)
+        .max_by_key(|status| match status {
+            ClientEndpointStatus::Online => 0,
+            ClientEndpointStatus::Disabled => 1,
+            ClientEndpointStatus::Connecting => 2,
+            ClientEndpointStatus::Reconnecting => 3,
+            ClientEndpointStatus::Attention => 4,
+        })
+        .unwrap_or(ClientEndpointStatus::Online);
+    let (glyph, _, color) = endpoint_status_presentation(status, palette);
+    put_right_text(buffer, rect, rect.y, glyph, Style::default().fg(color));
 }
 
 fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {

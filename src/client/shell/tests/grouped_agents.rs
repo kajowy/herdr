@@ -238,7 +238,10 @@ fn grouped_mode_across_machines_labels_spaces_with_their_machine() {
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let rows = sidebar_rows(&mut state);
-    assert!(rows.iter().any(|row| row == " machines"), "rows: {rows:#?}");
+    assert!(
+        rows.iter().any(|row| row == " \u{25be} machines"),
+        "rows: {rows:#?}"
+    );
     assert!(
         rows.iter().any(|row| row == "▾ Local · app (1) ○"),
         "rows: {rows:#?}"
