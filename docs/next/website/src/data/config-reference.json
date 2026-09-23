@@ -836,6 +836,12 @@
           "description": "Toggle sidebar collapse."
         },
         {
+          "key": "keys.toggle_machines",
+          "type": "keybinding",
+          "default": "\"prefix+m\"",
+          "description": "Fold the sidebar machines section down to its header row, or unfold it again."
+        },
+        {
           "key": "keys.indexed.tabs",
           "type": "string",
           "default": "unset",
