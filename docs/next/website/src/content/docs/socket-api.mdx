@@ -980,11 +980,206 @@ Errors look like this:
 {
   "id": "req_1",
   "error": {
-    "code": "not_found",
-    "message": "pane not found"
+    "code": "pane_not_found",
+    "message": "pane not found: w1:p9"
   }
 }
 ```
+
+`code` is stable and safe to branch on. `message` is written for people and can change between releases.
+
+### Error codes
+
+Every error code the socket API can return, grouped by the area that raises it. Codes that only the
+CLI prints locally, and codes that belong to the client shell endpoint transport, are not listed here.
+
+**Request and transport**
+
+| Code | When it occurs |
+| --- | --- |
+| `connection_local_only` | The method is only available through a client shell endpoint. |
+| `internal_error` | The server could not decode one of its own internal responses. |
+| `invalid_env` | A launch `env` key or value is empty, contains `=`, or contains a NUL byte. |
+| `invalid_key` | A key name in a key request is not a recognized terminal key. |
+| `invalid_params` | The request parsed, but its parameters do not describe a valid action. |
+| `invalid_request` | The request could not be parsed, or a required field is missing or contradictory. |
+| `not_implemented` | The method is in the schema but has no implementation yet. |
+| `serialization_error` | The server could not encode the response. |
+| `stream_transport_required` | The method needs the streaming socket transport. |
+| `timeout` | The request did not finish within its deadline. |
+| `unsupported_in_app_mode` | The method is only supported by the headless server. |
+
+**Panes**
+
+| Code | When it occurs |
+| --- | --- |
+| `cell_size_unavailable` | The host terminal cell size is not known yet. |
+| `confirmation_required` | Closing this pane or tab would close a worktree group. |
+| `copy_motion_unavailable` | The requested copy mode row is unavailable. |
+| `feature_disabled` | Pane graphics are disabled by `terminal.kitty_graphics`. |
+| `graphics_budget_exceeded` | The inline pane graphics memory limit is reached. |
+| `image_too_large` | The submitted image or frame is over the size limit. |
+| `invalid_agent` | A reported agent label is empty. |
+| `invalid_frame` | A graphics frame header is malformed or incomplete. |
+| `invalid_frame_file` | The frame file cannot be read or does not match the frame contract. |
+| `invalid_image` | The image payload is not valid base64, or does not match its declared dimensions. |
+| `invalid_layer_id` | The pane graphics layer id is not a known layer. |
+| `invalid_metadata_request` | The request sets and clears the same metadata field, or sets nothing. |
+| `invalid_metadata_source` | The reported metadata source is reserved or malformed. |
+| `invalid_metadata_token` | A metadata token key or value is malformed. |
+| `invalid_metadata_ttl` | The metadata TTL is out of range. |
+| `invalid_pane_swap` | The swap has neither a direction nor a valid source and target pair. |
+| `invalid_state_label` | The reported agent state label is unknown. |
+| `invalid_stream` | The pane graphics stream request has no owner. |
+| `layer_limit` | The pane has no free graphics layer or image id left. |
+| `metadata_sequence_source_limit` | The pane or workspace already tracks the maximum number of sequenced sources. |
+| `metadata_token_limit` | The pane or workspace already holds the maximum number of metadata tokens. |
+| `pane_clear_failed` | The pane could not be cleared. |
+| `pane_layout_unavailable` | The pane's layout could not be resolved. |
+| `pane_move_failed` | The move target disappeared, or the pane could not be reattached. |
+| `pane_not_found` | No pane matches the given pane id. |
+| `pane_send_failed` | Input could not be written to the pane. |
+| `pane_split_failed` | The split could not be created. |
+| `query_too_large` | The copy mode search query is over the size limit. |
+| `scrollback_editor_failed` | The scrollback could not be handed to the configured editor. |
+| `selection_unavailable` | The requested selection has no readable text. |
+| `stale_content` | The pane content changed while the request was being served. |
+| `stale_pane_target` | The pane is no longer focused. |
+| `stale_target` | The pane is no longer visible on the active surface. |
+| `stream_closed` | The pane graphics stream is not active. |
+| `stream_conflict` | Another owner already holds the pane graphics stream. |
+| `target_pane_not_found` | The target pane is missing, or is not in the requested tab. |
+
+**Tabs, workspaces, and layouts**
+
+| Code | When it occurs |
+| --- | --- |
+| `invalid_layout` | The layout document could not be parsed. |
+| `invalid_ratio` | The split ratio is not finite or is out of range. |
+| `invalid_target` | The request combines `tab_id` and `workspace_id`. |
+| `layout_apply_failed` | The layout could not be applied to the target tab. |
+| `layout_not_found` | The layout target does not exist. |
+| `no_active_pane` | The request needs an active pane and there is none. |
+| `no_active_workspace` | The request needs an active workspace and there is none. |
+| `split_not_found` | The split path does not exist in the layout. |
+| `tab_close_failed` | The tab could not be closed. |
+| `tab_create_failed` | The tab could not be created. |
+| `tab_move_failed` | `insert_index` is out of bounds. |
+| `tab_not_found` | No tab matches the given tab id. |
+| `workspace_create_failed` | The workspace could not be created. |
+| `workspace_group_close_required` | The workspace has linked worktree workspaces; close the group instead. |
+| `workspace_move_block_failed` | The move block is empty, repeats a workspace, or targets itself. |
+| `workspace_move_failed` | `insert_index` is out of bounds. |
+| `workspace_not_found` | No workspace matches the given workspace id. |
+
+**Worktrees**
+
+| Code | When it occurs |
+| --- | --- |
+| `ambiguous_worktree_branch` | More than one worktree matches the branch. |
+| `dirty_worktree_requires_force` | The worktree has local changes and the request did not force the removal. |
+| `linked_worktree_source` | Worktree actions must start from the repo parent workspace. |
+| `not_git_worktree` | The path or workspace is not inside a Git work tree. |
+| `not_linked_worktree` | The workspace is not a Herdr-managed linked worktree checkout. |
+| `stale_worktree_operation` | The operation finished after it had been superseded. |
+| `worktree_create_failed` | Git could not create the worktree. |
+| `worktree_list_failed` | The worktree list could not be read. |
+| `worktree_not_found` | No worktree matches the given path or branch. |
+| `worktree_open_failed` | The worktree exists, but its workspace could not be opened. |
+| `worktree_operation_in_progress` | Another worktree operation is already running for this checkout. |
+| `worktree_remove_failed` | Git could not remove the worktree. |
+
+**Agents**
+
+| Code | When it occurs |
+| --- | --- |
+| `agent_blocked` | The agent is waiting for interactive input. |
+| `agent_explain_unavailable` | The target pane has no detected agent to explain. |
+| `agent_launch_pending` | The agent is still starting and cannot be renamed yet. |
+| `agent_name_taken` | Another agent already uses that name. |
+| `agent_not_found` | The target does not name or host a known agent. |
+| `agent_not_idle` | A line-limited recent read was requested while the agent is not idle. |
+| `agent_not_ready` | The agent is blocked during startup, or is no longer the pane foreground process. |
+| `agent_not_running` | The agent stopped running in the target pane while the request was waiting. |
+| `agent_pane_busy` | The agent target pane is not an available shell. |
+| `agent_pane_not_found` | The agent target pane does not exist. |
+| `agent_pane_unavailable` | The agent target pane has no live terminal. |
+| `agent_prompt_failed` | The prompt could not be delivered to the agent. |
+| `agent_prompt_stalled` | The prompt produced no working or blocked state before the timeout. |
+| `agent_send_keys_failed` | The keys could not be delivered to the agent. |
+| `agent_start_input_failed` | The start command could not be written to the pane. |
+| `agent_target_ambiguous` | The agent target matches more than one agent. |
+| `empty_agent_prompt` | The prompt text is empty. |
+| `invalid_agent_argument` | Agent arguments cannot be encoded safely for the target shell. |
+| `invalid_agent_name` | The agent name is empty or uses unsupported characters. |
+| `invalid_agent_timeout` | The agent timeout is out of range. |
+| `invalid_agent_view` | The agent view source names an invalid plugin id. |
+| `unsupported_agent_kind` | The requested agent kind cannot be started interactively. |
+
+**Plugins**
+
+| Code | When it occurs |
+| --- | --- |
+| `ambiguous_plugin_action` | The action id matches more than one plugin; include `plugin_id`. |
+| `duplicate_plugin_action_id` | The manifest declares the same action id twice. |
+| `duplicate_plugin_link_handler_id` | The manifest declares the same link handler id twice. |
+| `duplicate_plugin_pane_id` | The manifest declares the same pane id twice. |
+| `invalid_plugin_action_title` | An action has no title. |
+| `invalid_plugin_command` | A command is empty or contains empty argv strings. |
+| `invalid_plugin_entrypoint` | The entrypoint id is not valid. |
+| `invalid_plugin_event` | An event hook has no event name. |
+| `invalid_plugin_id` | The plugin id is not valid. |
+| `invalid_plugin_link_handler_action` | A link handler references an unknown action. |
+| `invalid_plugin_link_handler_pattern` | A link handler has no pattern. |
+| `invalid_plugin_link_handler_title` | A link handler has no title. |
+| `invalid_plugin_min_herdr_version` | `min_herdr_version` is missing or is not a semantic version. |
+| `invalid_plugin_name` | The manifest has no plugin name. |
+| `invalid_plugin_pane_size` | Pane width and height are only supported when placement is popup. |
+| `invalid_plugin_pane_title` | A pane declaration has no title. |
+| `invalid_plugin_platform` | `platforms` is an empty array; omit the field instead. |
+| `invalid_plugin_source` | The manifest is outside the managed checkout, or its source is inconsistent. |
+| `invalid_plugin_version` | The manifest has no version. |
+| `platform_unsupported` | The plugin or action does not support the current platform. |
+| `plugin_action_not_found` | No plugin action matches the id. |
+| `plugin_command_limit_reached` | The plugin reached its concurrent command limit. |
+| `plugin_disabled` | The plugin is installed but disabled. |
+| `plugin_manifest_unavailable` | The plugin manifest could not be read. |
+| `plugin_not_found` | No installed plugin matches the id. |
+| `plugin_pane_not_found` | The plugin pane or its entrypoint does not exist. |
+| `plugin_pane_open_failed` | The plugin pane or popup disappeared while it was opening. |
+| `plugin_registry_load_failed` | The plugin registry could not be read. |
+| `plugin_registry_save_failed` | The plugin registry could not be written. |
+| `plugin_requires_newer_herdr` | The plugin requires a newer Herdr than the running one. |
+| `plugin_user_dir_create_failed` | The plugin user directory could not be created. |
+
+**Streams and subscriptions**
+
+| Code | When it occurs |
+| --- | --- |
+| `attach_failed` | The terminal session refused the attach for an unclassified reason. |
+| `events_lost` | The subscription fell behind retained history; resubscribe and resync with `session.snapshot`. |
+| `input_not_allowed` | The stream is a view stream and cannot send input. |
+| `invalid_command` | A stream command line is too long. |
+| `invalid_regex` | A subscription or wait filter is not a valid regular expression. |
+| `terminal_busy` | The terminal session already has an attached client. |
+| `terminal_not_found` | The terminal session does not exist. |
+| `unsupported_event_wait_match` | `events.wait` does not support the requested match. |
+
+**Server and session**
+
+| Code | When it occurs |
+| --- | --- |
+| `command_failed` | A custom command could not run. |
+| `command_not_found` | The custom command manifest is stale; reload the configuration. |
+| `command_target_mismatch` | The custom command target does not belong to the requested pane, tab, or workspace. |
+| `handoff_failed` | The live handoff could not complete. |
+| `integration_install_failed` | The agent integration could not be installed. |
+| `integration_uninstall_failed` | The agent integration could not be removed. |
+| `popup_not_open` | The request needs an open popup and there is none. |
+| `server_unavailable` | The server is shutting down, or the request could not be dispatched. |
+| `stale_announcement` | The product announcement being dismissed is no longer current. |
+| `stale_release_notes` | The release notes being dismissed are no longer current. |
+| `ui_busy` | A popup pane is already open. |
 
 ## Protocol stability
 
