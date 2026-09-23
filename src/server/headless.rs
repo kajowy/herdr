@@ -3156,7 +3156,7 @@ impl HeadlessServer {
             })
             .unwrap_or_else(|err| {
                 serde_json::to_string(&api::schema::ErrorResponse {
-                    id: String::new(),
+                    id: msg.request.id.clone(),
                     error: api::schema::ErrorBody {
                         code: "serialization_error".into(),
                         message: err.to_string(),
