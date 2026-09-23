@@ -13,7 +13,7 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_api_error_codes_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
     bun test scripts/release-workflows.test.ts
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
@@ -113,6 +113,7 @@ build-libghostty-vt:
 # Check that release docs and changelog have been finalized from docs/next before release
 release-docs-check:
     python3 scripts/agent_detection_manifest_check.py --require-all-published
+    python3 scripts/api_error_codes_check.py
     python3 scripts/config_reference_check.py
     node scripts/docs/versions.mjs check
     node scripts/docs/preview.mjs check
