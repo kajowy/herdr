@@ -42,6 +42,14 @@ impl ClientShellState {
         );
     }
 
+    /// Fold the whole machines section down to its header, or unfold it again.
+    pub(super) fn toggle_machines_section(&mut self, outcome: &mut ClientShellInput) {
+        self.machines_section_collapsed = !self.machines_section_collapsed;
+        self.workspace_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
     pub(super) fn handle_endpoint_machine_click(
         &mut self,
         point: (u16, u16),
