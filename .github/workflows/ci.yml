@@ -56,8 +56,7 @@ jobs:
           - os: macos-latest
             kind: unix
             nextest_filter: not binary(live_handoff)
-          - os: windows-latest
-            kind: windows
+          # The kajowy fork does not target Windows; upstream keeps this leg.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -176,6 +175,8 @@ jobs:
 
   windows-conpty-package:
     name: Windows ConPTY package
+    # The kajowy fork does not target Windows; upstream keeps running this job.
+    if: github.repository == 'herdrdev/herdr'
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
