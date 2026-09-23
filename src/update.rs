@@ -72,6 +72,7 @@ pub struct Version {
 impl Version {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.strip_prefix('v').unwrap_or(s);
+        let s = s.split('+').next().unwrap_or(s);
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
             return None;
@@ -84,7 +85,7 @@ impl Version {
     }
 
     pub fn current() -> Self {
-        Self::parse(crate::build_info::BASE_VERSION).expect("invalid CARGO_PKG_VERSION")
+        Self::parse(&crate::build_info::upstream_version()).expect("invalid CARGO_PKG_VERSION")
     }
 }
 
@@ -1372,7 +1373,10 @@ fn runtime_matches_release(status: &crate::api::RuntimeStatus, release: &Release
     let protocol_matches = release
         .target_protocol
         .is_none_or(|protocol| status.protocol == Some(protocol));
-    let version_matches = status.version.as_deref() == Some(release.label());
+    let version_matches = status
+        .version
+        .as_deref()
+        .is_some_and(|version| crate::build_info::version_matches(version, release.label()));
     protocol_matches && version_matches
 }
 
@@ -1712,8 +1716,12 @@ fn wait_for_running_server_protocol_at(
         {
             let protocol_matches =
                 expected_protocol.is_none_or(|protocol| status.protocol == Some(protocol));
-            let version_matches =
-                expected_version.is_none_or(|version| status.version.as_deref() == Some(version));
+            let version_matches = expected_version.is_none_or(|expected| {
+                status
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| crate::build_info::version_matches(version, expected))
+            });
             if protocol_matches && version_matches {
                 return Ok(());
             }
@@ -3426,6 +3434,11 @@ mod tests {
             patch: 0,
         };
         assert_eq!(v.to_string(), "0.1.0");
+    }
+
+    #[test]
+    fn version_parse_ignores_build_metadata() {
+        assert_eq!(Version::parse("0.9.1+kajowy.1"), Version::parse("0.9.1"));
     }
 
     #[test]
