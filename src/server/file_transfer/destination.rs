@@ -59,22 +59,63 @@ pub(crate) fn validate_root(root: &Path, home: &Path) -> Result<PathBuf, Transfe
         return Err(refused("outside the home directory"));
     }
     for denied in ABSOLUTE_DENYLIST {
-        if canonical_root.starts_with(denied) {
+        if starts_with_denylisted(&canonical_root, Path::new(denied)) {
             return Err(refused("system directory"));
         }
     }
     for denied in HOME_DENYLIST {
-        if canonical_root.starts_with(canonical_home.join(denied)) {
+        if starts_with_denylisted(&canonical_root, &canonical_home.join(denied)) {
             return Err(refused("protected configuration directory"));
         }
     }
     if canonical_root
         .components()
-        .any(|component| component.as_os_str() == ".git")
+        .any(|component| component_matches_name(component, ".git"))
     {
         return Err(refused("inside a git directory"));
     }
     Ok(root.to_path_buf())
+}
+
+// macOS (APFS/HFS+) and Windows (NTFS/ReFS) default to case-insensitive, case-preserving
+// filesystems, where `.SSH` and `.ssh` name the same directory regardless of which one (or
+// neither) currently exists on disk; `canonicalize_prefix` only case-corrects a component once
+// something real exists at that name, so a not-yet-created denylisted directory could otherwise
+// be reached under a differently-cased path. Linux filesystems default to case-sensitive, so
+// stay byte-exact there.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const CASE_INSENSITIVE_DENYLIST: bool = true;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const CASE_INSENSITIVE_DENYLIST: bool = false;
+
+#[allow(dead_code)] // used by validate_root, wired in a later task
+fn component_matches_name(component: std::path::Component, name: &str) -> bool {
+    match component.as_os_str().to_str() {
+        Some(text) if CASE_INSENSITIVE_DENYLIST => text.eq_ignore_ascii_case(name),
+        Some(text) => text == name,
+        None => false,
+    }
+}
+
+/// Whether `path` begins with `prefix`, matching components case-insensitively on filesystems
+/// that treat case as insignificant (see `CASE_INSENSITIVE_DENYLIST`).
+#[allow(dead_code)] // used by validate_root, wired in a later task
+fn starts_with_denylisted(path: &Path, prefix: &Path) -> bool {
+    if !CASE_INSENSITIVE_DENYLIST {
+        return path.starts_with(prefix);
+    }
+    let mut path_components = path.components();
+    prefix.components().all(|prefix_component| {
+        path_components.next().is_some_and(|component| {
+            match (
+                component.as_os_str().to_str(),
+                prefix_component.as_os_str().to_str(),
+            ) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => component == prefix_component,
+            }
+        })
+    })
 }
 
 #[allow(dead_code)] // wired to the upload request handler in a later task
@@ -184,20 +225,19 @@ fn create_directory_no_follow(path: &Path) -> io::Result<()> {
         })
 }
 
+/// This fork does not target Windows (CI is ubuntu + macOS only). The unix branch's fail-closed
+/// guarantee relies on `O_NOFOLLOW | O_DIRECTORY`, which has no direct Windows equivalent
+/// without extra reparse-point handling; rather than fall back to the disclosed-unsafe
+/// symlink_metadata-then-create pattern this refuses outright, so an unreviewed Windows path
+/// cannot silently ship with a weaker guarantee than unix.
 #[allow(dead_code)] // called by ensure_directory_no_follow, wired in a later task
 #[cfg(windows)]
 fn create_directory_no_follow(path: &Path) -> io::Result<()> {
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a real directory", path.display()),
-            ));
-        }
-        return Ok(());
-    }
-    std::fs::create_dir(path)?;
-    restrict_dir_permissions(path)
+    let _ = path;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "file upload destinations are not supported on this platform",
+    ))
 }
 
 #[allow(dead_code)] // wired to the upload request handler in a later task
@@ -284,6 +324,33 @@ mod tests {
             validate_root(Path::new("/home/tester/herdr-inbox"), &home()).unwrap(),
             PathBuf::from("/home/tester/herdr-inbox")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_symlinked_outside_home_is_refused() {
+        let base = tempdir();
+        let home = base.join("home-fixture");
+        std::fs::create_dir(&home).unwrap();
+        let outside = base.join("outside-fixture");
+        std::fs::create_dir(&outside).unwrap();
+        let linked_root = home.join("escape-link");
+        std::os::unix::fs::symlink(&outside, &linked_root).unwrap();
+
+        let err = validate_root(&linked_root, &home).unwrap_err();
+        assert_eq!(err.code, "destination_refused");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn case_folded_denylisted_root_is_refused_on_case_insensitive_filesystems() {
+        // Empirical finding (see task-1-report.md, finding 3): std::fs::canonicalize on macOS
+        // APFS case-corrects a component once something real exists at that name, but a
+        // not-yet-created denylisted directory (here `.ssh` never gets created) keeps whatever
+        // case the caller supplied, so the denylist comparison itself must fold case.
+        let base = tempdir();
+        let err = validate_root(&base.join(".SSH"), &base).unwrap_err();
+        assert_eq!(err.code, "destination_refused");
     }
 
     #[test]
