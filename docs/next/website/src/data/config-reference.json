@@ -50,7 +50,7 @@
           "key": "server.file_chunk_bytes",
           "type": "integer",
           "default": "700000",
-          "description": "Bytes of file data each transfer chunk carries."
+          "description": "Bytes of file data each transfer chunk carries. Clamped to 700000, the most a base64 chunk can carry inside the 1 MiB request line."
         }
       ]
     },

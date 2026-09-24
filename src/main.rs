@@ -230,7 +230,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # file_inbox = "~/herdr-inbox"
 # file_max_bytes = 2000000000
 # file_total_max_bytes = 20000000000
-# file_chunk_bytes = 700000
+# file_chunk_bytes = 700000  # clamped to 700000: a chunk must fit a 1 MiB request line
 
 # [worktrees]
 # directory = "~/.herdr/worktrees"

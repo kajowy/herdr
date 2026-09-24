@@ -1045,7 +1045,8 @@ pub struct ServerConfig {
     pub file_max_bytes: u64,
     /// Largest total accepted from one connection, in bytes. Default: 20000000000.
     pub file_total_max_bytes: u64,
-    /// Bytes of file data the server asks each chunk to carry. Default: 700000.
+    /// Bytes of file data the server asks each chunk to carry. Clamped to 700000, the most a
+    /// base64 chunk can carry inside the 1 MiB request line. Default: 700000.
     pub file_chunk_bytes: u32,
 }
 
@@ -2070,6 +2071,41 @@ headless_rows = 50
                 crate::config::DEFAULT_HEADLESS_ROWS
             )
         );
+    }
+
+    #[test]
+    fn an_unusable_file_chunk_size_is_clamped_with_a_diagnostic() {
+        let default_config = Config::default();
+        assert_eq!(
+            default_config.file_chunk_bytes(),
+            crate::config::MAX_FILE_CHUNK_BYTES
+        );
+        assert!(default_config
+            .clamped_file_chunk_bytes_diagnostic()
+            .is_none());
+
+        // Anything above the request-line budget would make every chunk exceed it, so the
+        // configured value is clamped rather than obeyed, and the user is told.
+        let oversized: Config = toml::from_str(
+            r#"[server]
+file_chunk_bytes = 4000000
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oversized.file_chunk_bytes(),
+            crate::config::MAX_FILE_CHUNK_BYTES
+        );
+        assert!(oversized.clamped_file_chunk_bytes_diagnostic().is_some());
+
+        let zero: Config = toml::from_str(
+            r#"[server]
+file_chunk_bytes = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(zero.file_chunk_bytes(), 1);
+        assert!(zero.clamped_file_chunk_bytes_diagnostic().is_some());
     }
 
     #[test]

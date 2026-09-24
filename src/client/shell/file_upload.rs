@@ -192,7 +192,12 @@ impl ClientShellState {
                 let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
                     return (false, Vec::new());
                 };
-                upload.chunk_bytes = chunk_bytes.max(1);
+                // The server names the chunk size, but this client allocates it (a `len`-sized
+                // buffer plus its base64 copy in `read_chunk`), so a hostile or broken server
+                // must not be able to name `u32::MAX` and take the client's memory with it.
+                // `DEFAULT_CHUNK_BYTES` is also the largest value a chunk request can carry
+                // under the 1 MiB request-line cap, so clamping loses nothing usable.
+                upload.chunk_bytes = chunk_bytes.clamp(1, DEFAULT_CHUNK_BYTES);
                 if complete {
                     // A directory entry is already on disk; move on to the next entry.
                     upload.transfer_id = None;

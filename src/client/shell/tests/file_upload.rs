@@ -217,6 +217,43 @@ fn the_chunk_loop_commits_at_the_size_declared_at_begin_not_the_walk_time_size()
 }
 
 #[test]
+fn an_absurd_server_chunk_size_is_clamped_before_the_client_allocates_it() {
+    // `read_chunk` allocates a `chunk_bytes`-sized buffer and base64-encodes a copy of it, so an
+    // unclamped `u32::MAX` here is a remote out-of-memory for this client.
+    let path = scratch_file("chunk-clamp", &[4u8; 16]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let begin_id = request_id(&outcome.actions).to_owned();
+    let (_, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &begin_id,
+        Ok(crate::api::schema::ResponseResult::FilePutBegan {
+            transfer_id: "ft-1-1".into(),
+            chunk_bytes: u32::MAX,
+            destination_label: "/home/tester/herdr-inbox".into(),
+            complete: false,
+            path: String::new(),
+        }),
+    );
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+        panic!("expected the upload overlay");
+    };
+    assert_eq!(
+        upload.chunk_bytes, 700_000,
+        "a server-named chunk size must be clamped to what a request line can carry"
+    );
+    let [ClientShellAction::Endpoint { request, .. }] = &actions[..] else {
+        panic!("expected the first chunk");
+    };
+    let crate::api::schema::Method::FilePutChunk(params) = &request.method else {
+        panic!("expected file.put.chunk");
+    };
+    // The file is 16 bytes, so the clamp is invisible in the payload; the field is the evidence.
+    assert_eq!(params.offset, 0);
+}
+
+#[test]
 fn a_name_this_server_refuses_skips_that_entry_and_keeps_going() {
     // The server refuses a name (leading dot, too long, a component it will not write) with
     // `invalid_file_path`. That must cost one entry, not the whole selection: the remaining

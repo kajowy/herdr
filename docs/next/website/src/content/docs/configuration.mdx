@@ -68,7 +68,7 @@ file_chunk_bytes = 700000
 
 With one attached client, all tabs follow its size. With multiple clients, each viewed tab follows the client that most recently focused, selected, or interacted with it. When all but one client detach, all tabs immediately return to the remaining client's size. When no clients remain, existing pane PTYs retain their last size and new headless layout uses the configured fallback.
 
-The same `[server]` table also controls file uploads to this machine: `file_inbox` is the directory that receives uploaded files, `file_max_bytes` and `file_total_max_bytes` cap a single file and a whole connection's transfers, and `file_chunk_bytes` sets how much file data each transfer chunk carries.
+The same `[server]` table also controls file uploads to this machine: `file_inbox` is the directory that receives uploaded files, `file_max_bytes` and `file_total_max_bytes` cap a single file and a whole connection's transfers, and `file_chunk_bytes` sets how much file data each transfer chunk carries. A chunk travels base64 encoded inside a 1 MiB request line, so `file_chunk_bytes` is clamped to 700000; a larger value would make every chunk exceed that line and break every upload.
 
 ## Terminal defaults
 

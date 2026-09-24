@@ -68,7 +68,7 @@ file_chunk_bytes = 700000
 
 只有一个客户端连接时,所有标签页都会采用它的尺寸。连接多个客户端时,每个正在查看的标签页会采用最后聚焦、选择或操作它的客户端尺寸。当只剩一个客户端时,所有标签页会立即恢复为该客户端的尺寸。没有客户端连接时,现有窗格 PTY 会保留最后的尺寸,新的无客户端布局会使用配置的回退值。
 
-The same `[server]` table also controls file uploads to this machine: `file_inbox` is the directory that receives uploaded files, `file_max_bytes` and `file_total_max_bytes` cap a single file and a whole connection's transfers, and `file_chunk_bytes` sets how much file data each transfer chunk carries.
+The same `[server]` table also controls file uploads to this machine: `file_inbox` is the directory that receives uploaded files, `file_max_bytes` and `file_total_max_bytes` cap a single file and a whole connection's transfers, and `file_chunk_bytes` sets how much file data each transfer chunk carries. A chunk travels base64 encoded inside a 1 MiB request line, so `file_chunk_bytes` is clamped to 700000; a larger value would make every chunk exceed that line and break every upload.
 
 ## 终端默认值
 
