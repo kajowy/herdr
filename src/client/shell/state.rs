@@ -694,8 +694,6 @@ pub(super) enum PendingEndpointKind {
     FilePutBegin,
     FilePutChunk,
     FilePutCommit,
-    /// Constructed by `cancel_file_upload`, which a later task's overlay cancel control calls.
-    #[allow(dead_code)]
     FilePutAbort,
 }
 

@@ -9,14 +9,8 @@ use base64::Engine as _;
 use super::*;
 use crate::client::file_collect;
 
-// `ClientShellOverlay` derives Debug (src/client/shell/state.rs:583), so this and
-// `file_collect::CollectedEntry` must derive it too.
-//
-// `skipped` and `total_bytes` are read by the overlay's render/summary, which a later task
-// wires up alongside the picker keybinding that opens this overlay; this driver only writes
-// them for now.
+// `ClientShellOverlay` derives Debug, so this and `file_collect::CollectedEntry` must too.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(super) struct ClientFileUploadOverlay {
     pub(super) entries: Vec<file_collect::CollectedEntry>,
     pub(super) skipped: Vec<String>,
@@ -33,7 +27,6 @@ pub(super) struct ClientFileUploadOverlay {
     /// response repaints.
     pub(super) file_count: usize,
     pub(super) directory_count: usize,
-    pub(super) sent_bytes: u64,
     pub(super) transfer_id: Option<String>,
     /// The size declared to the server in `file.put.begin` for the entry currently in flight
     /// (from `hash_file` at send time, not the walk-time `CollectedEntry::bytes`, which may be
@@ -60,10 +53,6 @@ const DEFAULT_CHUNK_BYTES: u32 = 700_000;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 impl ClientShellState {
-    // `open_file_upload` is wired to the picker keybinding (prefix+u); `start_file_upload` and
-    // `cancel_file_upload` are wired to the overlay's start/cancel controls.
-    // `toggle_file_upload_destination` is wired to its toggle control by a later task, so nothing
-    // calls it outside tests yet.
     pub(crate) fn open_file_upload(
         &mut self,
         selection: &[PathBuf],
@@ -97,7 +86,6 @@ impl ClientShellState {
             total_bytes,
             file_count,
             directory_count,
-            sent_bytes: 0,
             transfer_id: None,
             transfer_bytes: 0,
             chunk_bytes: DEFAULT_CHUNK_BYTES,
@@ -112,7 +100,6 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    #[allow(dead_code)]
     pub(super) fn toggle_file_upload_destination(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
             return;
@@ -357,9 +344,6 @@ impl ClientShellState {
                 let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
                     return (false, Vec::new());
                 };
-                upload.sent_bytes = upload
-                    .sent_bytes
-                    .saturating_add(next_offset.saturating_sub(upload.offset));
                 upload.offset = next_offset;
             }
             Ok(_) => return self.fail_file_upload("this server sent an unexpected response"),
