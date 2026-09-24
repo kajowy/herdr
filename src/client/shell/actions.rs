@@ -630,6 +630,10 @@ impl ClientShellState {
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);
                 return (repaint, outcome.actions);
             }
+            PendingEndpointKind::FilePutBegin => return self.complete_file_put_begin(result),
+            PendingEndpointKind::FilePutChunk => return self.complete_file_put_chunk(result),
+            PendingEndpointKind::FilePutCommit => return self.complete_file_put_commit(result),
+            PendingEndpointKind::FilePutAbort => return (false, Vec::new()),
             PendingEndpointKind::SelectionCopy => {
                 return match result {
                     Ok(crate::api::schema::ResponseResult::PaneSelection { text, .. })

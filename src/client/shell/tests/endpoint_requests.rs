@@ -57,7 +57,7 @@ fn submit_worktree(mut state: ClientShellState) -> (ClientShellState, Vec<Client
     (state, outcome.actions)
 }
 
-fn request_id(actions: &[ClientShellAction]) -> &str {
+pub(super) fn request_id(actions: &[ClientShellAction]) -> &str {
     let [ClientShellAction::Endpoint { request, .. }] = actions else {
         panic!("expected one endpoint request");
     };

@@ -5,6 +5,7 @@ use crate::protocol::{
     PaneSurfaceSplit, PaneSurfaceSplitDirection, SurfaceRect,
 };
 use crossterm::event::MouseEvent;
+use endpoint_requests::request_id;
 mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
@@ -251,6 +252,7 @@ mod close_tab;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod file_upload;
 mod graphics;
 mod grouped_agents;
 #[path = "input.rs"]

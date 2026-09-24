@@ -16,6 +16,7 @@ mod endpoint_notices;
 mod endpoint_sidebar;
 mod endpoints;
 pub(super) use endpoints::*;
+mod file_upload;
 mod global_menu;
 mod graphics;
 mod input;

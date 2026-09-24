@@ -23,6 +23,7 @@ pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
 mod events;
+mod file_collect;
 mod frame_output;
 mod handshake;
 mod input;

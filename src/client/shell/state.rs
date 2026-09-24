@@ -295,6 +295,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    FileUpload,
 }
 
 #[derive(Debug)]
@@ -595,6 +596,9 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    /// Constructed by `open_file_upload`, which a later task's picker keybinding calls.
+    #[allow(dead_code)]
+    FileUpload(super::file_upload::ClientFileUploadOverlay),
 }
 
 impl ClientShellOverlay {
@@ -613,6 +617,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::FileUpload(_) => ClientShellOverlayKind::FileUpload,
         }
     }
 }
@@ -675,6 +680,12 @@ pub(super) enum PendingEndpointKind {
         generation: u64,
         session_generation: u64,
     },
+    FilePutBegin,
+    FilePutChunk,
+    FilePutCommit,
+    /// Constructed by `cancel_file_upload`, which a later task's overlay cancel control calls.
+    #[allow(dead_code)]
+    FilePutAbort,
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -941,6 +952,10 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+    /// Read by `open_file_upload` and written by `toggle_file_upload_destination`; both are
+    /// wired to the picker overlay by a later task.
+    #[allow(dead_code)]
+    pub(super) file_upload_destination: crate::api::schema::FilePutDestination,
 }
 
 pub(super) fn product_announcement_state(
@@ -1106,6 +1121,7 @@ impl ClientShellState {
             endpoint_error: None,
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
+            file_upload_destination: crate::api::schema::FilePutDestination::Inbox,
         }
     }
 
