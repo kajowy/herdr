@@ -40,8 +40,6 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) done: bool,
 }
 
-// Used by `open_file_upload` below, which a later task's picker keybinding calls.
-#[allow(dead_code)]
 const DEFAULT_CHUNK_BYTES: u32 = 700_000;
 /// sha256 of the empty input, which is what a directory entry announces.
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

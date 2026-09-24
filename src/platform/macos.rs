@@ -765,50 +765,94 @@ pub struct FileChooserSelection {
     pub files_only: bool,
 }
 
+/// Why a chooser run produced no paths.
+///
+/// A cancel is only recognized from a positive signal (a clean exit with nothing selected, or a
+/// stderr marker that names cancellation). A `BridgeUnavailable` failure is only recognized when
+/// stderr positively names a missing ObjC/AppKit import or an unrecognized `osascript` language,
+/// since only those failures mean the JXA path could never have worked. Anything else — a
+/// non-zero exit with empty or unrecognized stderr — is `Ambiguous`: it must not be treated as a
+/// cancel (the run may have genuinely failed) and must not trigger the AppleScript fallback
+/// panel (the failure was not shown to be the bridge's fault), so it surfaces as a warning
+/// instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChooserFailure {
     Cancelled,
     BridgeUnavailable,
+    Ambiguous,
 }
 
 /// Ask the user for local files and directories with the native panel.
 ///
 /// Blocks until the user answers, so callers must run this off any render or input loop.
-/// Returns `None` when the user cancelled or picked nothing.
+/// Returns `None` when the user cancelled, picked nothing, or the run failed for a reason that
+/// does not positively identify a missing ObjC bridge.
 pub fn choose_files_for_upload() -> Option<(Vec<PathBuf>, FileChooserSelection)> {
     match run_chooser(&["-l", "JavaScript", "-e", CHOOSER_JXA]) {
-        Ok(paths) if !paths.is_empty() => Some((paths, FileChooserSelection { files_only: false })),
-        Ok(_) => None,
+        Ok(paths) => Some((paths, FileChooserSelection { files_only: false })),
         Err(ChooserFailure::Cancelled) => None,
+        Err(ChooserFailure::Ambiguous) => {
+            tracing::warn!(
+                "file chooser failed for an unrecognized reason; not retrying with the AppleScript fallback"
+            );
+            None
+        }
         Err(ChooserFailure::BridgeUnavailable) => match run_chooser(&["-e", CHOOSER_APPLESCRIPT]) {
-            Ok(paths) if !paths.is_empty() => {
-                Some((paths, FileChooserSelection { files_only: true }))
-            }
-            _ => None,
+            Ok(paths) => Some((paths, FileChooserSelection { files_only: true })),
+            Err(_) => None,
         },
     }
 }
 
+/// Runs one `osascript` chooser script to completion and classifies the result.
+///
+/// `Ok` is only returned when at least one path was selected; an empty selection is always
+/// classified through [`classify_chooser_result`] instead, so callers never have to separately
+/// check for an empty `Ok`.
 fn run_chooser(args: &[&str]) -> Result<Vec<PathBuf>, ChooserFailure> {
     let output = Command::new("osascript")
         .args(args)
         .stdin(Stdio::null())
         .output()
         .map_err(|_| ChooserFailure::BridgeUnavailable)?;
-    if !output.status.success() {
-        return Err(classify_chooser_failure(&output.stderr));
+    let paths = parse_chooser_output(&output.stdout);
+    if !paths.is_empty() {
+        return Ok(paths);
     }
-    Ok(parse_chooser_output(&output.stdout))
+    Err(classify_chooser_result(
+        output.status.success(),
+        &output.stderr,
+    ))
 }
 
-/// A missing AppKit or a JXA syntax failure must fall back; a user cancel must not.
+/// Pure decision for an empty selection: whether it was a cancel, a positively identified
+/// missing bridge, or an ambiguous failure that must not be assumed to be either.
+fn classify_chooser_result(exit_success: bool, stderr: &[u8]) -> ChooserFailure {
+    if exit_success {
+        // A clean exit with nothing selected is exactly what a dismissed panel looks like,
+        // regardless of what (if anything) ran on stderr.
+        return ChooserFailure::Cancelled;
+    }
+    classify_chooser_failure(stderr)
+}
+
+/// Classifies a failed run's stderr. Only called once the exit status is already known to be
+/// non-zero; a clean exit is handled by [`classify_chooser_result`] before this runs.
 fn classify_chooser_failure(stderr: &[u8]) -> ChooserFailure {
     let text = String::from_utf8_lossy(stderr);
-    if text.contains("-128") || text.contains("User canceled") || text.trim().is_empty() {
-        ChooserFailure::Cancelled
-    } else {
-        ChooserFailure::BridgeUnavailable
+    let text = text.trim();
+    if text.is_empty() {
+        // A non-zero exit with nothing on stderr is a silent failure: it could be a cancel, a
+        // crash, or anything else. Do not guess; surface it instead of opening a second panel.
+        return ChooserFailure::Ambiguous;
     }
+    if text.contains("-128") || text.contains("User canceled") {
+        return ChooserFailure::Cancelled;
+    }
+    if text.contains("AppKit") || text.contains("Can't get") || text.contains("-1728") {
+        return ChooserFailure::BridgeUnavailable;
+    }
+    ChooserFailure::Ambiguous
 }
 
 /// Split one path per line, dropping entries that vanished between choosing and reading.
@@ -880,16 +924,43 @@ mod chooser_tests {
     }
 
     #[test]
-    fn a_bridge_error_is_distinguished_from_a_cancel() {
+    fn a_clean_exit_with_nothing_selected_is_a_cancel() {
         assert_eq!(
-            classify_chooser_failure(b"execution error: Can't get AppKit. (-1728)"),
-            ChooserFailure::BridgeUnavailable
-        );
-        assert_eq!(
-            classify_chooser_failure(b"execution error: User canceled. (-128)"),
+            classify_chooser_result(true, b""),
             ChooserFailure::Cancelled
         );
-        assert_eq!(classify_chooser_failure(b""), ChooserFailure::Cancelled);
+    }
+
+    #[test]
+    fn a_silent_failure_is_ambiguous_not_a_cancel_or_a_bridge_error() {
+        assert_eq!(
+            classify_chooser_result(false, b""),
+            ChooserFailure::Ambiguous
+        );
+    }
+
+    #[test]
+    fn a_positively_identified_cancel_marker_is_recognized_despite_the_nonzero_exit() {
+        assert_eq!(
+            classify_chooser_result(false, b"execution error: User canceled. (-128)"),
+            ChooserFailure::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_genuine_bridge_error_is_distinguished_from_a_cancel_or_an_ambiguous_failure() {
+        assert_eq!(
+            classify_chooser_result(false, b"execution error: Can't get AppKit. (-1728)"),
+            ChooserFailure::BridgeUnavailable
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_nonempty_stderr_is_ambiguous_not_assumed_to_be_a_bridge_error() {
+        assert_eq!(
+            classify_chooser_result(false, b"execution error: something else went wrong"),
+            ChooserFailure::Ambiguous
+        );
     }
 }
 
