@@ -718,10 +718,48 @@ fn the_paste_names_the_endpoint_that_committed_not_whichever_is_active_later() {
 
 #[test]
 fn a_finished_transfer_copies_instead_of_pasting_into_an_agent_pane() {
-    let (_state, actions) = finish_upload(true);
+    let (mut state, actions) = finish_upload(true);
     assert!(matches!(
         &actions[..],
         [ClientShellAction::ClipboardWrite(bytes)]
             if bytes == b"/home/tester/herdr-inbox/payload.bin"
     ));
+    // Nothing appears in the pane on this path, so the dialog has to show where the file landed.
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("/home/tester/herdr-inbox/payload.bin"),
+        "the landed path must be shown when it is only copied:\n{frame}"
+    );
+}
+
+#[test]
+fn the_overlay_shows_the_destination_this_server_reported() {
+    // A server with a configured inbox writes somewhere other than ~/herdr-inbox; showing the
+    // hard-coded default would tell the user the wrong place.
+    let path = scratch_file("label", &[0u8; 4]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let begin_id = request_id(&outcome.actions).to_owned();
+    state.handle_endpoint_result(
+        &boot_id,
+        &begin_id,
+        Ok(crate::api::schema::ResponseResult::FilePutBegan {
+            transfer_id: "ft-1-1".into(),
+            chunk_bytes: 4,
+            // Control characters in a server string must never reach the frame.
+            destination_label: "/srv/drop\u{1b}[201~box".into(),
+            complete: false,
+            path: String::new(),
+        }),
+    );
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("/srv/drop"),
+        "the server's destination must be shown:\n{frame}"
+    );
+    assert!(
+        !frame.contains('\u{1b}'),
+        "a control character from the server reached the frame:\n{frame}"
+    );
 }

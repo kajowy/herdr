@@ -44,6 +44,12 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) offset: u64,
     /// Final paths of committed files, in arrival order. Only these are pasted back.
     pub(super) committed: Vec<String>,
+    /// Where this server says it is putting the files, as reported by `file.put.begin`. Empty
+    /// until the first response arrives, when the destination kind's own name is shown instead.
+    pub(super) destination_label: String,
+    /// What was handed back through the clipboard rather than pasted, shown so the user can see
+    /// the landed path. `None` while nothing has landed, or when it went straight into the pane.
+    pub(super) copied: Option<String>,
     pub(super) running: bool,
     pub(super) error: Option<String>,
     pub(super) done: bool,
@@ -97,6 +103,8 @@ impl ClientShellState {
             chunk_bytes: DEFAULT_CHUNK_BYTES,
             offset: 0,
             committed: Vec::new(),
+            destination_label: String::new(),
+            copied: None,
             running: false,
             error: None,
             done: false,
@@ -209,6 +217,7 @@ impl ClientShellState {
             Ok(crate::api::schema::ResponseResult::FilePutBegan {
                 transfer_id,
                 chunk_bytes,
+                destination_label,
                 complete,
                 ..
             }) => {
@@ -224,6 +233,7 @@ impl ClientShellState {
                 // `DEFAULT_CHUNK_BYTES` is also the largest value a chunk request can carry
                 // under the 1 MiB request-line cap, so clamping loses nothing usable.
                 upload.chunk_bytes = chunk_bytes.clamp(1, DEFAULT_CHUNK_BYTES);
+                upload.destination_label = display_safe(&destination_label);
                 if complete {
                     // A directory entry is already on disk; move on to the next entry.
                     upload.transfer_id = None;
@@ -501,6 +511,13 @@ impl ClientShellState {
                 snapshot.agents.iter().any(|agent| agent.pane_id == pane_id)
             })
         });
+        if pane_id.is_none() || pane_runs_agent {
+            // The spec asks for both on this path: the clipboard gets it, and the dialog shows it,
+            // because nothing appears in the pane to tell the user where the file landed.
+            if let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() {
+                upload.copied = Some(text.clone());
+            }
+        }
         match pane_id.filter(|_| !pane_runs_agent) {
             Some(pane_id) => (
                 true,
@@ -517,6 +534,16 @@ impl ClientShellState {
             ),
         }
     }
+}
+
+/// A server-supplied string trimmed to something safe to draw: control characters (including the
+/// bracketed-paste terminator's bytes) never reach the frame, and it is bounded so one long label
+/// cannot push the rest of the line out of the overlay.
+fn display_safe(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_control())
+        .take(200)
+        .collect()
 }
 
 /// How one entry is named to the user: its path relative to the picked directory, or the picked

@@ -36,9 +36,15 @@ pub(super) fn render_file_upload_overlay(
             )
         }
     };
-    let destination = match c.destination {
-        crate::api::schema::FilePutDestination::Inbox => "herdr-inbox",
-        crate::api::schema::FilePutDestination::PaneCwd => "this pane's directory",
+    // Once the server has answered a begin it has told us where it is actually writing, which may
+    // be a configured inbox rather than the default. Before that, name the destination kind.
+    let destination = if c.destination_label.is_empty() {
+        match c.destination {
+            crate::api::schema::FilePutDestination::Inbox => "herdr-inbox",
+            crate::api::schema::FilePutDestination::PaneCwd => "this pane's directory",
+        }
+    } else {
+        c.destination_label.as_str()
     };
     put_text(
         b,
@@ -66,6 +72,18 @@ pub(super) fn render_file_upload_overlay(
             line,
             i.width,
             &format!(" {status} {index}/{total} — {percent}%"),
+            Style::default().fg(p.text).bg(p.panel_bg),
+        );
+        line += 1;
+    }
+
+    if let Some(copied) = c.copied.as_deref() {
+        put_text(
+            b,
+            i.x,
+            line,
+            i.width,
+            &format!(" copied {copied}"),
             Style::default().fg(p.text).bg(p.panel_bg),
         );
         line += 1;
