@@ -1121,7 +1121,7 @@ impl HeadlessServer {
             };
             self.shell_geometry_controller_for_terminal(terminal_id)
         });
-        self.file_transfers.abort_client(client_id);
+        self.file_transfers.forget_client(client_id);
         self.remove_client(client_id);
         if let Some((controller_id, target)) = restore_shell_controller {
             self.restore_shell_tab_geometry(controller_id, target);
@@ -1828,7 +1828,7 @@ impl HeadlessServer {
             if let Some(client) = self.clients.get_mut(&client_id) {
                 client.writer = None;
             }
-            self.file_transfers.abort_client(client_id);
+            self.file_transfers.forget_client(client_id);
             let _ = self.remove_client(client_id);
         }
         self.foreground_client_id = None;

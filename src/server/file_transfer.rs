@@ -83,10 +83,10 @@ pub(crate) struct FileTransferRegistry {
     config: FileTransferConfig,
     active: HashMap<u64, ActiveTransfer>,
     /// Per-client cumulative bytes committed so far, enforced against `max_total_bytes` in
-    /// `begin`. Only `abort_client` clears an entry. The task that wires this registry into the
-    /// server MUST call `abort_client` on connection teardown (clean disconnect, error, or
-    /// timeout) — otherwise a reconnecting client's byte budget never resets and a departed
-    /// client's entry leaks for the life of the server.
+    /// `begin`. Only `forget_client` clears an entry, and only a real connection teardown (clean
+    /// disconnect, error, or timeout) may call it — otherwise a departed client's entry leaks for
+    /// the life of the server, and a routine UI event that merely deactivates the surface would
+    /// hand the connection a fresh budget and make the cap decorative.
     session_bytes: HashMap<u64, u64>,
     next_transfer_serial: u64,
 }
@@ -348,7 +348,15 @@ impl FileTransferRegistry {
         Ok(())
     }
 
-    pub(crate) fn abort_client(&mut self, client_id: u64) {
+    /// Drop this client's in-flight transfer and its temp file, keeping its byte budget. Used
+    /// where the connection survives but cannot carry a transfer any more, such as a surface
+    /// deactivation.
+    pub(crate) fn abort_client_transfer(&mut self, client_id: u64) {
+        self.discard(client_id);
+    }
+
+    /// Forget this client entirely, budget included. Only for a real connection teardown.
+    pub(crate) fn forget_client(&mut self, client_id: u64) {
         self.discard(client_id);
         self.session_bytes.remove(&client_id);
     }
@@ -771,8 +779,66 @@ mod tests {
             )
             .unwrap();
         registry.chunk(2, &accepted.transfer_id, 0, b"ab").unwrap();
-        registry.abort_client(2);
+        registry.forget_client(2);
         assert_eq!(std::fs::read_dir(&root).unwrap().flatten().count(), 0);
+    }
+
+    /// The total-bytes cap is per connection. A surface deactivation is a routine UI event (the
+    /// user toggles machines), so it must drop the in-flight transfer without handing the
+    /// connection a fresh budget; only a real disconnect forgets the budget.
+    #[test]
+    fn deactivation_drops_the_transfer_but_keeps_the_byte_budget() {
+        let home = scratch("budget");
+        let mut registry = FileTransferRegistry::new(FileTransferConfig {
+            inbox: home.join("inbox"),
+            max_file_bytes: 1024,
+            max_total_bytes: 6,
+            chunk_bytes: 8,
+        });
+        let root = home.join("inbox");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let accepted = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("a.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap();
+        registry
+            .chunk(1, &accepted.transfer_id, 0, b"abcd")
+            .unwrap();
+        registry.commit(1, &accepted.transfer_id).unwrap();
+
+        // 4 of the 6 allowed bytes are spent. A deactivation must not refund them.
+        registry.abort_client_transfer(1);
+        let err = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("b.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.code, "transfer_too_large",
+            "a surface deactivation must not reset the connection's byte budget"
+        );
+
+        // A real disconnect does forget it.
+        registry.forget_client(1);
+        registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("c.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap();
     }
 
     #[test]

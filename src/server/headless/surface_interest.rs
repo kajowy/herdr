@@ -31,7 +31,7 @@ impl HeadlessServer {
             }
             client.shell_surface_active = active;
             if !active {
-                self.file_transfers.abort_client(client_id);
+                self.file_transfers.abort_client_transfer(client_id);
             }
             client.request_repaint();
             client.shell_graphics_delivery = Default::default();
