@@ -74,6 +74,12 @@ impl App {
         self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)
     }
 
+    /// Launch working directory of one public pane id, for server-resolved upload destinations.
+    pub(crate) fn pane_launch_cwd(&self, pane_id: &str) -> Option<PathBuf> {
+        let (ws_idx, pane_id) = self.parse_pane_id(pane_id)?;
+        self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)
+    }
+
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
         resolve_new_terminal_cwd(&self.state.new_terminal_cwd, follow_cwd)
     }
@@ -427,4 +433,28 @@ fn terminal_agent_session_info(
             kind: session.session_ref.kind,
             value: session.session_ref.value.clone(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn pane_launch_cwd_resolves_a_public_pane_id() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("cwd")];
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public = app.public_pane_id(0, pane_id).unwrap();
+
+        assert!(app.pane_launch_cwd(&public).is_some());
+        assert!(app.pane_launch_cwd("p_999_999").is_none());
+    }
 }

@@ -258,6 +258,8 @@ pub struct HeadlessServer {
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
+    /// Per-client file upload transfers answering `file.put.*` on the client shell endpoint lane.
+    file_transfers: crate::server::file_transfer::FileTransferRegistry,
 }
 
 #[cfg(windows)]
@@ -314,6 +316,7 @@ impl HeadlessServer {
     /// 3. Returns the server ready to run
     pub fn new(
         app: app::App,
+        config: &config::Config,
         config_diagnostics: &[String],
         api_tx: Option<api::ApiRequestSender>,
         api_server: Option<api::ServerHandle>,
@@ -385,6 +388,14 @@ impl HeadlessServer {
             should_quit,
             server_event_rx,
             server_event_tx,
+            file_transfers: crate::server::file_transfer::FileTransferRegistry::new(
+                crate::server::file_transfer::FileTransferConfig {
+                    inbox: crate::worktree::expand_tilde_absolute_path(&config.server.file_inbox),
+                    max_file_bytes: config.server.file_max_bytes,
+                    max_total_bytes: config.server.file_total_max_bytes,
+                    chunk_bytes: config.server.file_chunk_bytes,
+                },
+            ),
         })
     }
 
@@ -1110,6 +1121,7 @@ impl HeadlessServer {
             };
             self.shell_geometry_controller_for_terminal(terminal_id)
         });
+        self.file_transfers.abort_client(client_id);
         self.remove_client(client_id);
         if let Some((controller_id, target)) = restore_shell_controller {
             self.restore_shell_tab_geometry(controller_id, target);

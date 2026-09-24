@@ -76,6 +76,16 @@ impl HeadlessServer {
             return false;
         }
 
+        if matches!(
+            &request.method,
+            api::schema::Method::FilePutBegin(_)
+                | api::schema::Method::FilePutChunk(_)
+                | api::schema::Method::FilePutCommit(_)
+                | api::schema::Method::FilePutAbort(_)
+        ) {
+            return self.handle_file_put_request(client_id, boot_id, request_id, &request.method);
+        }
+
         let api_request_id = format!(
             "endpoint:{}:{client_id}:{request_id}",
             self.client_shell_boot_id
@@ -126,5 +136,136 @@ impl HeadlessServer {
                     stream_active: None,
                 },
             )
+    }
+
+    fn handle_file_put_request(
+        &mut self,
+        client_id: u64,
+        boot_id: String,
+        request_id: String,
+        method: &api::schema::Method,
+    ) -> bool {
+        let result = match method {
+            api::schema::Method::FilePutBegin(params) => self.file_put_begin(client_id, params),
+            api::schema::Method::FilePutChunk(params) => self.file_put_chunk(client_id, params),
+            api::schema::Method::FilePutCommit(params) => self.file_put_commit(client_id, params),
+            api::schema::Method::FilePutAbort(params) => self.file_put_abort(client_id, params),
+            _ => Err(crate::server::file_transfer::TransferError::new(
+                "invalid_request",
+                "this method is not a file transfer method",
+            )),
+        };
+        let message = match result {
+            Ok(result) => crate::server::client_commands::success_message_with_result(
+                boot_id, request_id, result,
+            ),
+            Err(error) => crate::server::client_commands::error_message(
+                boot_id,
+                request_id,
+                error.code,
+                error.message,
+            ),
+        };
+        self.send_to_client(client_id, message);
+        false
+    }
+
+    fn file_put_begin(
+        &mut self,
+        client_id: u64,
+        params: &api::schema::FilePutBeginParams,
+    ) -> Result<api::schema::ResponseResult, crate::server::file_transfer::TransferError> {
+        let home = crate::integration::home_dir().map_err(|err| {
+            crate::server::file_transfer::TransferError::from_io("destination_refused", &err)
+        })?;
+        let (root, allow_subdirectories) = match params.destination {
+            api::schema::FilePutDestination::Inbox => {
+                (self.file_transfers.config().inbox.clone(), true)
+            }
+            api::schema::FilePutDestination::PaneCwd => {
+                let Some(pane_id) = params.pane_id.as_deref() else {
+                    return Err(crate::server::file_transfer::TransferError::new(
+                        "destination_refused",
+                        "this destination needs a pane id",
+                    ));
+                };
+                let Some(cwd) = self.app.pane_launch_cwd(pane_id) else {
+                    return Err(crate::server::file_transfer::TransferError::new(
+                        "destination_refused",
+                        "this pane has no resolvable working directory",
+                    ));
+                };
+                (cwd, false)
+            }
+        };
+        let accepted = self.file_transfers.begin(
+            client_id,
+            &root,
+            &home,
+            allow_subdirectories,
+            crate::server::file_transfer::BeginEntry {
+                suggested_name: &params.suggested_name,
+                relative_path: params.relative_path.as_deref(),
+                kind: params.entry_kind,
+                bytes: params.bytes,
+                sha256: &params.sha256,
+            },
+        )?;
+        Ok(api::schema::ResponseResult::FilePutBegan {
+            transfer_id: accepted.transfer_id,
+            chunk_bytes: accepted.chunk_bytes,
+            destination_label: accepted.destination_label,
+            complete: accepted.complete,
+            path: accepted
+                .path
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        })
+    }
+
+    fn file_put_chunk(
+        &mut self,
+        client_id: u64,
+        params: &api::schema::FilePutChunkParams,
+    ) -> Result<api::schema::ResponseResult, crate::server::file_transfer::TransferError> {
+        use base64::Engine as _;
+
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(params.data_b64.as_bytes())
+            .map_err(|err| {
+                crate::server::file_transfer::TransferError::new(
+                    "invalid_file_path",
+                    format!("chunk payload is not valid base64: {err}"),
+                )
+            })?;
+        let next_offset =
+            self.file_transfers
+                .chunk(client_id, &params.transfer_id, params.offset, &data)?;
+        Ok(api::schema::ResponseResult::FilePutChunkAccepted {
+            transfer_id: params.transfer_id.clone(),
+            next_offset,
+        })
+    }
+
+    fn file_put_commit(
+        &mut self,
+        client_id: u64,
+        params: &api::schema::FilePutCommitParams,
+    ) -> Result<api::schema::ResponseResult, crate::server::file_transfer::TransferError> {
+        let committed = self.file_transfers.commit(client_id, &params.transfer_id)?;
+        Ok(api::schema::ResponseResult::FilePutCommitted {
+            transfer_id: params.transfer_id.clone(),
+            path: committed.path.to_string_lossy().into_owned(),
+            bytes: committed.bytes,
+        })
+    }
+
+    fn file_put_abort(
+        &mut self,
+        client_id: u64,
+        params: &api::schema::FilePutAbortParams,
+    ) -> Result<api::schema::ResponseResult, crate::server::file_transfer::TransferError> {
+        self.file_transfers.abort(client_id, &params.transfer_id)?;
+        Ok(api::schema::ResponseResult::Ok {})
     }
 }

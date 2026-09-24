@@ -104,6 +104,14 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         should_quit,
         server_event_rx,
         server_event_tx,
+        file_transfers: crate::server::file_transfer::FileTransferRegistry::new(
+            crate::server::file_transfer::FileTransferConfig {
+                inbox: crate::worktree::expand_tilde_absolute_path(&config.server.file_inbox),
+                max_file_bytes: config.server.file_max_bytes,
+                max_total_bytes: config.server.file_total_max_bytes,
+                chunk_bytes: config.server.file_chunk_bytes,
+            },
+        ),
     }
 }
 
