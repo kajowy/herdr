@@ -29,13 +29,28 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 crate::selection::write_osc52_bytes(&bytes);
             }
-            shell::ClientShellAction::PastePane { pane_id, text } => {
-                let active = endpoints.active_id().clone();
+            shell::ClientShellAction::PastePane {
+                endpoint_id,
+                boot_id,
+                pane_id,
+                text,
+            } => {
+                // Pane ids are per-server and per-boot. Deliver only to the endpoint and boot the
+                // transfer committed against, never to whatever endpoint is active by now.
+                let still_that_boot = shell
+                    .as_deref()
+                    .and_then(|shell| shell.endpoint_boot_id(&endpoint_id))
+                    == Some(boot_id.as_str());
+                if !still_that_boot {
+                    warn!("not pasting the uploaded path: that server is no longer the one that received it");
+                    continue;
+                }
                 let message = ClientMessage::ClientShellPaneInput {
                     pane_id,
                     events: vec![crate::protocol::ClientPaneInputEvent::Paste(text)],
                 };
-                if endpoints.send_to(&active, &message) != endpoint::EndpointSendOutcome::Sent {
+                if endpoints.send_to(&endpoint_id, &message) != endpoint::EndpointSendOutcome::Sent
+                {
                     warn!("could not deliver the uploaded path to the pane");
                 }
             }

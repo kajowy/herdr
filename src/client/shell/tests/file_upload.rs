@@ -535,6 +535,13 @@ fn send_files_defaults_to_prefix_u() {
 }
 
 fn finish_upload(pane_runs_agent: bool) -> (ClientShellState, Vec<ClientShellAction>) {
+    finish_upload_with(pane_runs_agent, |_| {})
+}
+
+fn finish_upload_with(
+    pane_runs_agent: bool,
+    before_commit: impl FnOnce(&mut ClientShellState),
+) -> (ClientShellState, Vec<ClientShellAction>) {
     let path = scratch_file("finish", &[1u8; 4]);
     let (mut state, boot_id) = shell_with_selection(&path);
     let mut outcome = ClientShellInput::default();
@@ -589,6 +596,7 @@ fn finish_upload(pane_runs_agent: bool) -> (ClientShellState, Vec<ClientShellAct
             });
         }
     }
+    before_commit(&mut state);
 
     let (_, actions) = state.handle_endpoint_result(
         &boot_id,
@@ -658,6 +666,33 @@ fn a_finished_transfer_pastes_into_a_shell_pane() {
             if text == "/home/tester/herdr-inbox/payload.bin"
     ));
     assert!(state.overlay.is_some());
+}
+
+#[test]
+fn the_paste_names_the_endpoint_that_committed_not_whichever_is_active_later() {
+    // Pane ids are per-server. Switching machines between the commit and the action being drained
+    // must not send the paste to an unrelated pane on the newly active machine.
+    let profile_id = crate::client::endpoint::ProfileId::generate();
+    let (_state, actions) = finish_upload_with(false, |state| {
+        state.active_endpoint_id = ClientEndpointId::Ssh(profile_id.clone());
+    });
+    let [ClientShellAction::PastePane {
+        endpoint_id,
+        boot_id,
+        ..
+    }] = &actions[..]
+    else {
+        panic!("expected one paste action, got {actions:?}");
+    };
+    assert_eq!(
+        endpoint_id,
+        &ClientEndpointId::Local,
+        "the paste must go to the endpoint that received the file"
+    );
+    assert!(
+        !boot_id.is_empty(),
+        "the paste must carry the boot it committed against"
+    );
 }
 
 #[test]

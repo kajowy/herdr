@@ -260,7 +260,13 @@ pub(crate) enum ClientShellAction {
     Keybind(crate::input::KeybindAction),
     ChooseFiles,
     /// Paste one client-built, client-quoted string into a stable pane target.
+    ///
+    /// Carries its own endpoint and boot id for the same reason `Endpoint` does: pane ids are
+    /// per-server and per-boot, so dispatching to whatever endpoint happens to be active when
+    /// this action is drained could paste into an unrelated pane on another machine.
     PastePane {
+        endpoint_id: ClientEndpointId,
+        boot_id: String,
         pane_id: String,
         text: String,
     },

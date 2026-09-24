@@ -22,6 +22,10 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) skipped: Vec<String>,
     pub(super) index: usize,
     pub(super) destination: crate::api::schema::FilePutDestination,
+    /// The endpoint and server boot this selection is being sent to, captured when the overlay
+    /// opens. The committed paths are only ever handed back to this endpoint and boot.
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) boot_id: String,
     pub(super) pane_id: Option<String>,
     pub(super) total_bytes: u64,
     pub(super) sent_bytes: u64,
@@ -66,6 +70,12 @@ impl ClientShellState {
             skipped: collection.skipped,
             index: 0,
             destination: self.file_upload_destination,
+            endpoint_id: self.active_endpoint_id.clone(),
+            boot_id: self
+                .snapshot
+                .as_deref()
+                .map(|snapshot| snapshot.boot_id.clone())
+                .unwrap_or_default(),
             pane_id: self.focused_pane_id(),
             total_bytes,
             sent_bytes: 0,
@@ -444,13 +454,18 @@ impl ClientShellState {
     }
 
     fn finish_file_upload(&mut self) -> (bool, Vec<ClientShellAction>) {
-        let (committed, pane_id) = {
+        let (committed, pane_id, endpoint_id, boot_id) = {
             let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
                 return (false, Vec::new());
             };
             upload.running = false;
             upload.done = true;
-            (upload.committed.clone(), upload.pane_id.clone())
+            (
+                upload.committed.clone(),
+                upload.pane_id.clone(),
+                upload.endpoint_id.clone(),
+                upload.boot_id.clone(),
+            )
         };
         // A directory-only selection commits no files, so there is nothing to hand back.
         if committed.is_empty() {
@@ -474,7 +489,15 @@ impl ClientShellState {
             })
         });
         match pane_id.filter(|_| !pane_runs_agent) {
-            Some(pane_id) => (true, vec![ClientShellAction::PastePane { pane_id, text }]),
+            Some(pane_id) => (
+                true,
+                vec![ClientShellAction::PastePane {
+                    endpoint_id,
+                    boot_id,
+                    pane_id,
+                    text,
+                }],
+            ),
             None => (
                 true,
                 vec![ClientShellAction::ClipboardWrite(text.into_bytes())],
