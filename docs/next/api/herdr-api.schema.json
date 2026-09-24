@@ -2151,6 +2151,113 @@
           ],
           "type": "object"
         },
+        "FilePutAbortParams": {
+          "properties": {
+            "transfer_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transfer_id"
+          ],
+          "type": "object"
+        },
+        "FilePutBeginParams": {
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "destination": {
+              "$ref": "#/schemas/request/$defs/FilePutDestination",
+              "default": "inbox"
+            },
+            "entry_kind": {
+              "$ref": "#/schemas/request/$defs/FilePutEntryKind",
+              "default": "file"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "relative_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "suggested_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "suggested_name",
+            "bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "FilePutChunkParams": {
+          "properties": {
+            "data_b64": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "transfer_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transfer_id",
+            "offset",
+            "data_b64"
+          ],
+          "type": "object"
+        },
+        "FilePutCommitParams": {
+          "properties": {
+            "transfer_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transfer_id"
+          ],
+          "type": "object"
+        },
+        "FilePutDestination": {
+          "description": "Destination kind a client may name. The client never names a path.",
+          "oneOf": [
+            {
+              "const": "inbox",
+              "description": "The server-configured inbox directory. The only destination that accepts subdirectories.",
+              "type": "string"
+            },
+            {
+              "const": "pane_cwd",
+              "description": "The named pane's launch working directory, resolved once at begin.",
+              "type": "string"
+            }
+          ]
+        },
+        "FilePutEntryKind": {
+          "description": "What one `file.put.begin` creates. A directory entry carries no bytes and finishes at begin,\nwhich is how an empty directory survives without a marker file in the user's tree.",
+          "enum": [
+            "file",
+            "directory"
+          ],
+          "type": "string"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -4960,6 +5067,70 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/CommandInvokeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.put.begin",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilePutBeginParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.put.chunk",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilePutChunkParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.put.commit",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilePutCommitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.put.abort",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FilePutAbortParams"
             }
           },
           "required": [
@@ -9521,6 +9692,90 @@
                 "root_pane",
                 "worktree",
                 "already_open"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "chunk_bytes": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "complete": {
+                  "description": "True when the entry needed no bytes, so no chunk or commit follows.",
+                  "type": "boolean"
+                },
+                "destination_label": {
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Final path of a completed entry; empty while a file transfer is still open.",
+                  "type": "string"
+                },
+                "transfer_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "file_put_began",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "transfer_id",
+                "chunk_bytes",
+                "destination_label",
+                "complete",
+                "path"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "next_offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "transfer_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "file_put_chunk_accepted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "transfer_id",
+                "next_offset"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "transfer_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "file_put_committed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "transfer_id",
+                "path",
+                "bytes"
               ],
               "type": "object"
             },

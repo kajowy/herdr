@@ -1037,6 +1037,16 @@ impl App {
                     "worktree.create is handled asynchronously by the app runtime",
                 );
             }
+            Method::FilePutBegin(_)
+            | Method::FilePutChunk(_)
+            | Method::FilePutCommit(_)
+            | Method::FilePutAbort(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "file.put.* is only available on the client shell endpoint lane",
+                );
+            }
             Method::WorktreeOpen(params) => return self.handle_worktree_open(request.id, params),
             Method::WorktreeRemove(params) => {
                 let _ = params;
