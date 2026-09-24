@@ -89,8 +89,9 @@ pub(super) fn dispatch_client_shell_actions(
                         // selection or a genuine failure needs to reach the client loop.
                         let event = match crate::platform::choose_files_for_upload() {
                             crate::platform::FileChooserOutcome::Selected(paths, selection) => {
+                                // Walk the selection here, off the client loop.
                                 ClientLoopEvent::FileChooserResult {
-                                    paths,
+                                    collection: crate::client::file_collect::collect(&paths),
                                     files_only: selection.files_only,
                                 }
                             }

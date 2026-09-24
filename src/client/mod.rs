@@ -758,7 +758,10 @@ async fn run_client_loop(
 
         match event {
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
-            ClientLoopEvent::FileChooserResult { paths, files_only } => {
+            ClientLoopEvent::FileChooserResult {
+                collection,
+                files_only,
+            } => {
                 if let Some(shell) = state.shell.as_mut() {
                     let mut outcome = shell::ClientShellInput::default();
                     if files_only {
@@ -767,7 +770,7 @@ async fn run_client_loop(
                         );
                         outcome.repaint = true;
                     }
-                    shell.open_file_upload(&paths, &mut outcome);
+                    shell.open_file_upload(collection, &mut outcome);
                     let frame = outcome
                         .repaint
                         .then(|| shell.compose(state.reported_size.0, state.reported_size.1))

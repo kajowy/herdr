@@ -1,5 +1,6 @@
 use super::*;
 use crate::client::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::client::file_collect::collect;
 use crate::client::shell::file_upload::quote_upload_path;
 
 fn scratch_file(label: &str, data: &[u8]) -> std::path::PathBuf {
@@ -23,7 +24,7 @@ fn shell_with_selection(path: &std::path::Path) -> (ClientShellState, String) {
     state.set_pane_surface(surface());
     let boot_id = state.snapshot.as_ref().unwrap().boot_id.clone();
     let mut outcome = ClientShellInput::default();
-    state.open_file_upload(&[path.to_path_buf()], &mut outcome);
+    state.open_file_upload(collect(&[path.to_path_buf()]), &mut outcome);
     assert!(matches!(
         state.overlay,
         Some(ClientShellOverlay::FileUpload(_))
@@ -46,7 +47,7 @@ fn a_directory_entry_needs_no_chunk_and_the_next_entry_starts_immediately() {
     state.set_pane_surface(surface());
     let boot_id = state.snapshot.as_ref().unwrap().boot_id.clone();
     let mut outcome = ClientShellInput::default();
-    state.open_file_upload(std::slice::from_ref(&root), &mut outcome);
+    state.open_file_upload(collect(std::slice::from_ref(&root)), &mut outcome);
 
     let mut outcome = ClientShellInput::default();
     state.start_file_upload(&mut outcome);
@@ -271,7 +272,7 @@ fn a_name_this_server_refuses_skips_that_entry_and_keeps_going() {
     state.set_pane_surface(surface());
     let boot_id = state.snapshot.as_ref().unwrap().boot_id.clone();
     let mut outcome = ClientShellInput::default();
-    state.open_file_upload(std::slice::from_ref(&root), &mut outcome);
+    state.open_file_upload(collect(std::slice::from_ref(&root)), &mut outcome);
 
     let mut outcome = ClientShellInput::default();
     state.start_file_upload(&mut outcome);

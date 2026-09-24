@@ -31,10 +31,15 @@ pub(super) enum ClientLoopEvent {
         force: bool,
     },
     Timer,
-    /// A file chooser selection. Only sent for a real selection: `paths` is always non-empty,
-    /// since a cancel sends no event at all and a failure sends `FileChooserFailed` instead.
+    /// A file chooser selection, already walked into upload entries. Only sent for a real
+    /// selection, since a cancel sends no event at all and a failure sends `FileChooserFailed`
+    /// instead.
+    ///
+    /// The walk happens on the chooser thread, not here: it is recursive filesystem work whose
+    /// cost follows the size of the selection, and the client loop it would otherwise run on also
+    /// drives input and render.
     FileChooserResult {
-        paths: Vec<std::path::PathBuf>,
+        collection: crate::client::file_collect::Collection,
         /// True when the AppleScript fallback ran, so directories were not offered.
         files_only: bool,
     },

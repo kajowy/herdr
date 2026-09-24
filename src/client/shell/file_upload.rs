@@ -2,8 +2,6 @@
 //! one request at a time. The endpoint lane is single-flight, so this never issues a second
 //! request before the previous one's response comes back.
 
-use std::path::PathBuf;
-
 use base64::Engine as _;
 
 use super::*;
@@ -53,12 +51,13 @@ const DEFAULT_CHUNK_BYTES: u32 = 700_000;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 impl ClientShellState {
+    /// Open the confirmation overlay for an already-walked selection. The walk is the caller's
+    /// job (`file_collect::collect`, on the chooser thread) so this never does filesystem work.
     pub(crate) fn open_file_upload(
         &mut self,
-        selection: &[PathBuf],
+        collection: file_collect::Collection,
         outcome: &mut ClientShellInput,
     ) {
-        let collection = file_collect::collect(selection);
         if collection.entries.is_empty() {
             self.set_endpoint_error("Nothing in that selection can be sent.");
             outcome.repaint = true;
