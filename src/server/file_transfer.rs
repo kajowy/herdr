@@ -1,3 +1,17 @@
+//! Per-client file transfer registry and temp-file lifecycle.
+//!
+//! Error codes produced in this module:
+//! - `transfer_busy` — the connection already has a transfer open.
+//! - `transfer_not_found` — no active transfer matches this client and transfer id.
+//! - `transfer_offset_mismatch` — a chunk's offset does not match bytes written so far, or
+//!   `commit` was called before all announced bytes arrived.
+//! - `transfer_checksum_mismatch` — the assembled bytes do not match the announced sha256.
+//! - `transfer_too_large` — a file, or a connection's running total, exceeds the configured cap.
+//! - `transfer_chunk_too_large` — a single chunk exceeds the configured `chunk_bytes`.
+//! - `transfer_write_failed` — an I/O error while creating, writing, or placing the file.
+//! - `transfer_name_collision` — placement lost every retry to a concurrently created file of
+//!   the same generated name; extremely unlikely, but returned rather than clobbering.
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write as _};
@@ -12,6 +26,11 @@ pub(crate) mod destination;
 const TEMP_SUFFIX: &str = ".herdr-part";
 #[allow(dead_code)] // wired to the upload request handler in a later task
 const STALE_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Bound on retrying a collided no-replace placement with a freshly generated name. Each retry
+/// calls `unique_target`, which itself scans up to 1000 numbered variants, so this only bounds
+/// how many times a genuine concurrent-creation race can make us start that scan over.
+#[allow(dead_code)] // wired to the upload request handler in a later task
+const MAX_COMMIT_COLLISION_RETRIES: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TransferError {
@@ -55,7 +74,11 @@ pub(crate) struct BeginEntry<'a> {
 struct ActiveTransfer {
     transfer_id: String,
     temp_path: PathBuf,
-    final_path: PathBuf,
+    /// Directory the final file lands in, kept so `commit` can re-run `unique_target` against
+    /// it on a placement collision instead of trusting a name picked at `begin`.
+    dir: PathBuf,
+    /// Original (non-uniqified) leaf name, re-passed to `unique_target` on each retry.
+    leaf_name: String,
     file: fs::File,
     expected_bytes: u64,
     written_bytes: u64,
@@ -67,6 +90,11 @@ struct ActiveTransfer {
 pub(crate) struct FileTransferRegistry {
     config: FileTransferConfig,
     active: HashMap<u64, ActiveTransfer>,
+    /// Per-client cumulative bytes committed so far, enforced against `max_total_bytes` in
+    /// `begin`. Only `abort_client` clears an entry. The task that wires this registry into the
+    /// server MUST call `abort_client` on connection teardown (clean disconnect, error, or
+    /// timeout) — otherwise a reconnecting client's byte budget never resets and a departed
+    /// client's entry leaks for the life of the server.
     session_bytes: HashMap<u64, u64>,
     next_transfer_serial: u64,
 }
@@ -204,7 +232,6 @@ impl FileTransferRegistry {
             });
         }
 
-        let final_path = destination::unique_target(&dir, &leaf_name)?;
         let temp_path = dir.join(format!("{transfer_id}{TEMP_SUFFIX}"));
         let file = create_private_new(&temp_path)
             .map_err(|err| TransferError::from_io("transfer_write_failed", &err))?;
@@ -214,7 +241,8 @@ impl FileTransferRegistry {
             ActiveTransfer {
                 transfer_id: transfer_id.clone(),
                 temp_path,
-                final_path,
+                dir,
+                leaf_name,
                 file,
                 expected_bytes: entry.bytes,
                 written_bytes: 0,
@@ -238,6 +266,15 @@ impl FileTransferRegistry {
         offset: u64,
         data: &[u8],
     ) -> Result<u64, TransferError> {
+        if data.len() as u64 > u64::from(self.config.chunk_bytes) {
+            return Err(TransferError::new(
+                "transfer_chunk_too_large",
+                format!(
+                    "this chunk exceeds the configured {} byte chunk size",
+                    self.config.chunk_bytes
+                ),
+            ));
+        }
         let transfer = self.lookup_mut(client_id, transfer_id)?;
         if offset != transfer.written_bytes {
             return Err(TransferError::new(
@@ -295,13 +332,17 @@ impl FileTransferRegistry {
             return Err(TransferError::from_io("transfer_write_failed", &err));
         }
         drop(transfer.file);
-        if let Err(err) = fs::rename(&transfer.temp_path, &transfer.final_path) {
-            let _ = fs::remove_file(&transfer.temp_path);
-            return Err(TransferError::from_io("transfer_write_failed", &err));
-        }
+        let final_path =
+            match place_committed_file(&transfer.temp_path, &transfer.dir, &transfer.leaf_name) {
+                Ok(path) => path,
+                Err(err) => {
+                    let _ = fs::remove_file(&transfer.temp_path);
+                    return Err(err);
+                }
+            };
         *self.session_bytes.entry(client_id).or_default() += transfer.written_bytes;
         Ok(CommittedFile {
-            path: transfer.final_path,
+            path: final_path,
             bytes: transfer.written_bytes,
         })
     }
@@ -345,6 +386,95 @@ impl FileTransferRegistry {
 #[allow(dead_code)] // wired to the upload request handler in a later task
 fn not_found() -> TransferError {
     TransferError::new("transfer_not_found", "this transfer is no longer active")
+}
+
+/// Place a committed temp file under `dir` using `leaf_name`, atomically refusing to replace an
+/// existing file. `unique_target` alone cannot guarantee this: it only checks that a name is
+/// free at the moment it runs, which leaves a window between that check and the eventual
+/// `rename` where a second transfer of the same name can land first. Each attempt here re-runs
+/// `unique_target` for a fresh candidate and then performs the placement with a rename that
+/// fails closed (rather than silently replacing) when the candidate is taken, so the window
+/// only costs a retry rather than data loss.
+#[allow(dead_code)] // wired to the upload request handler in a later task
+fn place_committed_file(
+    temp_path: &Path,
+    dir: &Path,
+    leaf_name: &str,
+) -> Result<PathBuf, TransferError> {
+    for _ in 0..MAX_COMMIT_COLLISION_RETRIES {
+        let candidate = destination::unique_target(dir, leaf_name)?;
+        match rename_no_replace(temp_path, &candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(TransferError::from_io("transfer_write_failed", &err)),
+        }
+    }
+    Err(TransferError::new(
+        "transfer_name_collision",
+        "could not place this file after repeated name collisions",
+    ))
+}
+
+/// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
+/// when it already exists.
+#[allow(dead_code)] // called by place_committed_file, wired in a later task
+#[cfg(target_os = "linux")]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let from = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
+    let to = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
+    // SAFETY: `from` and `to` are valid nul-terminated C strings for the duration of this call.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
+/// when it already exists.
+#[allow(dead_code)] // called by place_committed_file, wired in a later task
+#[cfg(target_os = "macos")]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let from = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
+    let to = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
+    // SAFETY: `from` and `to` are valid nul-terminated C strings for the duration of this call.
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Portable fallback for platforms without an atomic no-replace rename syscall: a hard link
+/// fails with `AlreadyExists` rather than replacing `to`, and removing `from` afterward leaves
+/// exactly one directory entry pointing at the data, matching a successful rename's outcome. A
+/// failure between the two steps can leave both entries; that residue is a correctness gap this
+/// fork accepts on platforms outside its Linux/macOS CI, in exchange for never clobbering.
+#[allow(dead_code)] // called by place_committed_file, wired in a later task
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
 }
 
 #[allow(dead_code)] // wired to the upload request handler in a later task
@@ -684,5 +814,124 @@ mod tests {
             .chunk(2, &accepted.transfer_id, 0, b"ab")
             .unwrap_err();
         assert_eq!(err.code, "transfer_not_found");
+    }
+
+    /// Regression test for the never-overwrite guarantee: a second transfer landing under the
+    /// same name after the first has already committed must get a numbered suffix, and the
+    /// first file's contents must survive untouched.
+    #[test]
+    fn a_same_name_transfer_commits_under_a_numbered_suffix_without_clobbering() {
+        let home = scratch("collision");
+        let mut registry = registry(&home);
+        let root = home.join("inbox");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let first_data = b"first upload";
+        let first = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("note.txt", &sha256_hex(first_data), first_data.len() as u64),
+            )
+            .unwrap();
+        registry
+            .chunk(1, &first.transfer_id, 0, &first_data[..8])
+            .unwrap();
+        registry
+            .chunk(1, &first.transfer_id, 8, &first_data[8..])
+            .unwrap();
+        let first_committed = registry.commit(1, &first.transfer_id).unwrap();
+        assert_eq!(first_committed.path, root.join("note.txt"));
+
+        let second_data = b"second uplo";
+        let second = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry(
+                    "note.txt",
+                    &sha256_hex(second_data),
+                    second_data.len() as u64,
+                ),
+            )
+            .unwrap();
+        registry
+            .chunk(1, &second.transfer_id, 0, &second_data[..8])
+            .unwrap();
+        registry
+            .chunk(1, &second.transfer_id, 8, &second_data[8..])
+            .unwrap();
+        let second_committed = registry.commit(1, &second.transfer_id).unwrap();
+
+        assert_eq!(second_committed.path, root.join("note-2.txt"));
+        assert_eq!(std::fs::read(root.join("note.txt")).unwrap(), first_data);
+        assert_eq!(std::fs::read(root.join("note-2.txt")).unwrap(), second_data);
+    }
+
+    #[test]
+    fn committing_the_same_transfer_twice_is_not_found_the_second_time() {
+        let home = scratch("double-commit");
+        let mut registry = registry(&home);
+        let root = home.join("inbox");
+        std::fs::create_dir_all(&root).unwrap();
+        let accepted = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("a.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap();
+        registry
+            .chunk(1, &accepted.transfer_id, 0, b"abcd")
+            .unwrap();
+        registry.commit(1, &accepted.transfer_id).unwrap();
+        let err = registry.commit(1, &accepted.transfer_id).unwrap_err();
+        assert_eq!(err.code, "transfer_not_found");
+    }
+
+    #[test]
+    fn committing_with_no_chunks_on_a_nonzero_entry_is_refused() {
+        let home = scratch("no-chunks");
+        let mut registry = registry(&home);
+        let root = home.join("inbox");
+        std::fs::create_dir_all(&root).unwrap();
+        let accepted = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("a.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap();
+        let err = registry.commit(1, &accepted.transfer_id).unwrap_err();
+        assert_eq!(err.code, "transfer_offset_mismatch");
+    }
+
+    #[test]
+    fn a_chunk_larger_than_the_configured_size_is_refused() {
+        let home = scratch("chunk-too-large");
+        let mut registry = registry(&home);
+        let root = home.join("inbox");
+        std::fs::create_dir_all(&root).unwrap();
+        let accepted = registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("a.txt", &sha256_hex(b"123456789"), 9),
+            )
+            .unwrap();
+        let err = registry
+            .chunk(1, &accepted.transfer_id, 0, b"123456789")
+            .unwrap_err();
+        assert_eq!(err.code, "transfer_chunk_too_large");
     }
 }
