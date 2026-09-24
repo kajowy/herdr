@@ -60,9 +60,15 @@ Herdr のグローバルメニューを開いて `reload config` を選ぶこと
 [server]
 headless_cols = 160
 headless_rows = 50
+file_inbox = "~/herdr-inbox"
+file_max_bytes = 2000000000
+file_total_max_bytes = 20000000000
+file_chunk_bytes = 700000
 ```
 
 クライアントが 1 つだけ接続されている場合、すべてのタブがそのサイズに従います。複数のクライアントが接続されている場合、表示中の各タブは、最後にそのタブへフォーカス、選択、または操作したクライアントのサイズに従います。1 つを除くすべてのクライアントが切断すると、すべてのタブは残ったクライアントのサイズへすぐに戻ります。クライアントが 1 つも残っていない場合、既存のペイン PTY は最後のサイズを保ち、新しいヘッドレスレイアウトには設定したフォールバックが使われます。
+
+The same `[server]` table also controls file uploads to this machine: `file_inbox` is the directory that receives uploaded files, `file_max_bytes` and `file_total_max_bytes` cap a single file and a whole connection's transfers, and `file_chunk_bytes` sets how much file data each transfer chunk carries.
 
 ## ターミナルのデフォルト
 

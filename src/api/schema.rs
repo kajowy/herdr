@@ -32,6 +32,18 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Whether an upload entry is a regular file or an empty directory marker.
+///
+/// Placeholder for the `file.put.begin` wire schema, which a later task adds; the transfer
+/// registry needs this distinction now to decide whether an entry completes at `begin` or
+/// stays open for `chunk`/`commit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // wired to the file.put.begin wire schema in a later task
+pub(crate) enum FilePutEntryKind {
+    File,
+    Directory,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Request {
     pub id: String,

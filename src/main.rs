@@ -226,6 +226,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 [server]
 # headless_cols = 120
 # headless_rows = 40
+# file_inbox = "~/herdr-inbox"
+# file_max_bytes = 2000000000
+# file_total_max_bytes = 20000000000
+# file_chunk_bytes = 700000
 
 # [worktrees]
 # directory = "~/.herdr/worktrees"

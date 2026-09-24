@@ -27,6 +27,30 @@
           "type": "integer",
           "default": "40",
           "description": "Virtual terminal height used for layout and newly created panes when no client is attached. Must be greater than zero."
+        },
+        {
+          "key": "server.file_inbox",
+          "type": "string",
+          "default": "\"~/herdr-inbox\"",
+          "description": "Directory on this machine that receives files sent from a connected client."
+        },
+        {
+          "key": "server.file_max_bytes",
+          "type": "integer",
+          "default": "2000000000",
+          "description": "Largest single file this machine accepts in one transfer."
+        },
+        {
+          "key": "server.file_total_max_bytes",
+          "type": "integer",
+          "default": "20000000000",
+          "description": "Largest total this machine accepts from one client connection."
+        },
+        {
+          "key": "server.file_chunk_bytes",
+          "type": "integer",
+          "default": "700000",
+          "description": "Bytes of file data each transfer chunk carries."
         }
       ]
     },

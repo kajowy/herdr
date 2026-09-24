@@ -67,6 +67,10 @@ NON_API_SOURCES = {
     # File upload destination validation: pure logic with no caller yet in this task; a later
     # task wires it into a socket API request, at which point this moves to API_SOURCES.
     "src/server/file_transfer/destination.rs": "not yet wired to a socket API request",
+    # File upload transfer registry: begin/chunk/commit/abort logic with no caller yet in this
+    # task; a later task wires it into a socket API request, at which point this moves to
+    # API_SOURCES.
+    "src/server/file_transfer.rs": "not yet wired to a socket API request",
 }
 
 CODE_LITERAL = r'"([a-z][a-z0-9_]*)"\s*(?:\.\s*(?:into|to_string|to_owned)\s*\(\s*\))?'

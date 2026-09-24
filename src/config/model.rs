@@ -1033,6 +1033,14 @@ pub struct ServerConfig {
     pub headless_cols: u16,
     /// Virtual terminal height used when no client is attached. Default: 40.
     pub headless_rows: u16,
+    /// Directory that receives files sent to this machine. Default: "~/herdr-inbox"
+    pub file_inbox: String,
+    /// Largest single file accepted by one transfer, in bytes. Default: 2000000000.
+    pub file_max_bytes: u64,
+    /// Largest total accepted from one connection, in bytes. Default: 20000000000.
+    pub file_total_max_bytes: u64,
+    /// Bytes of file data the server asks each chunk to carry. Default: 700000.
+    pub file_chunk_bytes: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1313,6 +1321,10 @@ impl Default for ServerConfig {
         Self {
             headless_cols: crate::config::DEFAULT_HEADLESS_COLS,
             headless_rows: crate::config::DEFAULT_HEADLESS_ROWS,
+            file_inbox: "~/herdr-inbox".to_owned(),
+            file_max_bytes: 2_000_000_000,
+            file_total_max_bytes: 20_000_000_000,
+            file_chunk_bytes: 700_000,
         }
     }
 }
