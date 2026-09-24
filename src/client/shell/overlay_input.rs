@@ -875,6 +875,27 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::FileUpload(_))) {
+            match key.code {
+                KeyCode::Enter => {
+                    let done = matches!(
+                        self.overlay.as_ref(),
+                        Some(ClientShellOverlay::FileUpload(upload)) if upload.done
+                    );
+                    if done {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    } else {
+                        self.start_file_upload(outcome);
+                    }
+                }
+                KeyCode::Esc => self.cancel_file_upload(outcome),
+                KeyCode::Tab => self.toggle_file_upload_destination(outcome),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::ConfirmClose(_))) {
             if key.code == KeyCode::Enter {
                 self.accept_close_confirmation(outcome);

@@ -1694,8 +1694,20 @@ impl ClientShellState {
                     Some(ClientShellOverlay::ConfirmClose(_)) => {
                         self.accept_close_confirmation(outcome);
                     }
+                    Some(ClientShellOverlay::FileUpload(upload)) => {
+                        if upload.done {
+                            self.overlay = None;
+                            outcome.repaint = true;
+                        } else {
+                            self.start_file_upload(outcome);
+                        }
+                    }
                     _ => {}
                 }
+            } else if super::contains(self.hits.overlay_cancel, point)
+                && matches!(self.overlay, Some(ClientShellOverlay::FileUpload(_)))
+            {
+                self.cancel_file_upload(outcome);
             } else if super::contains(self.hits.overlay_clear, point) {
                 if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
                     rename.input.clear();

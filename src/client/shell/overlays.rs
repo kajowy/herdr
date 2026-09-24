@@ -1,5 +1,6 @@
 use super::*;
 
+mod file_upload_overlay;
 mod settings_overlay;
 mod worktree_overlays;
 
@@ -79,9 +80,10 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
-        ClientShellOverlay::ContextMenu(_)
-        | ClientShellOverlay::GlobalMenu(_)
-        | ClientShellOverlay::FileUpload(_) => None,
+        ClientShellOverlay::FileUpload(v) => {
+            file_upload_overlay::render_file_upload_overlay(b, v, p)
+        }
+        ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
 

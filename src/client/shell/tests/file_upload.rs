@@ -326,6 +326,52 @@ fn losing_the_active_surface_mid_transfer_fails_the_upload_instead_of_leaving_it
 }
 
 #[test]
+fn the_overlay_shows_the_manifest_then_progress() {
+    let path = scratch_file("render", &[0u8; 12]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+
+    let frame = render_shell_frame(&mut state);
+    assert!(frame.contains("1 file"), "manifest missing:\n{frame}");
+    assert!(
+        frame.contains("herdr-inbox") || frame.contains("inbox"),
+        "{frame}"
+    );
+
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let begin_id = request_id(&outcome.actions).to_owned();
+    state.handle_endpoint_result(
+        &boot_id,
+        &begin_id,
+        Ok(crate::api::schema::ResponseResult::FilePutBegan {
+            transfer_id: "ft-1-1".into(),
+            chunk_bytes: 4,
+            destination_label: "/home/tester/herdr-inbox".into(),
+            complete: false,
+            path: String::new(),
+        }),
+    );
+    let frame = render_shell_frame(&mut state);
+    assert!(frame.contains("sending"), "progress missing:\n{frame}");
+}
+
+#[test]
+fn esc_cancels_and_tab_toggles_the_destination() {
+    let path = scratch_file("keys", &[0u8; 4]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+    state.handle_input_bytes(b"\t");
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+        panic!("overlay closed");
+    };
+    assert_eq!(
+        upload.destination,
+        crate::api::schema::FilePutDestination::PaneCwd
+    );
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn the_send_files_binding_asks_for_a_file_chooser() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
