@@ -2360,6 +2360,16 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChooserSelection {
+    pub files_only: bool,
+}
+
+/// Unsupported platform stub; no native file chooser exists here yet.
+pub fn choose_files_for_upload() -> Option<(Vec<std::path::PathBuf>, FileChooserSelection)> {
+    None
+}
+
 fn read_registered_png_clipboard() -> Option<Vec<u8>> {
     static PNG_FORMAT: LazyLock<u32> = LazyLock::new(|| {
         let name = wide_null("PNG");

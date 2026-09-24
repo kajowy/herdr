@@ -1167,6 +1167,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
         let mut pending = Some(abandoned);
         let mut serial = 31;
         let mut scheduled = None;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         for _ in 0..2 {
             begin_endpoint_activation(
                 &mut state,
@@ -1179,6 +1180,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
                 false,
                 Instant::now(),
                 &mut scheduled,
+                &tx,
             )
             .unwrap();
         }
@@ -1227,6 +1229,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
         let mut pending = None;
         let mut serial = 40;
         let mut scheduled = None;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         begin_endpoint_activation(
             &mut state,
             &mut endpoints,
@@ -1238,6 +1241,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             false,
             Instant::now(),
             &mut scheduled,
+            &tx,
         )
         .unwrap();
         if replaced_generation {
@@ -1267,6 +1271,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             false,
             Instant::now(),
             &mut scheduled,
+            &tx,
         )
         .unwrap();
         assert_eq!(
@@ -1326,6 +1331,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             force,
             Instant::now(),
             &mut scheduled,
+            &tx,
         )
         .unwrap();
         assert_eq!(pending.as_ref().unwrap().target(), &ClientEndpointId::Local);
@@ -1347,6 +1353,7 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
     let mut pending = None;
     let mut serial = 50;
     let mut scheduled = None;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
     endpoints.disconnect(&ClientEndpointId::Local);
     for endpoint_id in [ClientEndpointId::Local, endpoint()] {
         begin_endpoint_activation(
@@ -1360,6 +1367,7 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
             false,
             Instant::now(),
             &mut scheduled,
+            &tx,
         )
         .unwrap();
         assert_eq!(

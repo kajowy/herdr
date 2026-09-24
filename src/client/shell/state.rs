@@ -258,6 +258,7 @@ pub(crate) enum ClientShellAction {
     },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
+    ChooseFiles,
 }
 
 #[derive(Default)]
@@ -596,8 +597,7 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
-    /// Constructed by `open_file_upload`, which a later task's picker keybinding calls.
-    #[allow(dead_code)]
+    /// Constructed by `open_file_upload`, wired to the picker keybinding (prefix+u).
     FileUpload(super::file_upload::ClientFileUploadOverlay),
 }
 
@@ -952,9 +952,8 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
-    /// Read by `open_file_upload` and written by `toggle_file_upload_destination`; both are
-    /// wired to the picker overlay by a later task.
-    #[allow(dead_code)]
+    /// Read by `open_file_upload`, now reachable from the picker keybinding. Written by
+    /// `toggle_file_upload_destination`, wired to the overlay's toggle control by a later task.
     pub(super) file_upload_destination: crate::api::schema::FilePutDestination,
 }
 
@@ -1850,7 +1849,7 @@ impl ClientShellState {
     ///
     /// Every assignment must go through this setter so a repeated identical
     /// message gets a fresh deadline instead of inheriting the previous one.
-    pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
+    pub(crate) fn set_endpoint_error(&mut self, message: impl Into<String>) {
         self.endpoint_error = Some(message.into());
         self.endpoint_error_deadline = Some(
             std::time::Instant::now() + std::time::Duration::from_secs(ENDPOINT_ERROR_TIMEOUT_SECS),

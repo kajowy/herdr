@@ -13,6 +13,9 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleMachines) => {
                 self.toggle_machines_section(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::SendFiles) => {
+                outcome.actions.push(ClientShellAction::ChooseFiles);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;

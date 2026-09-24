@@ -248,6 +248,16 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChooserSelection {
+    pub files_only: bool,
+}
+
+/// Unsupported platform stub.
+pub fn choose_files_for_upload() -> Option<(Vec<std::path::PathBuf>, FileChooserSelection)> {
+    None
+}
+
 /// Unsupported platform stub.
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)

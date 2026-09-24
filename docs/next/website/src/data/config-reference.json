@@ -866,6 +866,12 @@
           "description": "Fold the sidebar machines section down to its header row, or unfold it again."
         },
         {
+          "key": "keys.send_files",
+          "type": "keybinding",
+          "default": "\"prefix+u\"",
+          "description": "Send local files and folders to the focused pane's machine."
+        },
+        {
           "key": "keys.indexed.tabs",
           "type": "string",
           "default": "unset",

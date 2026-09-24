@@ -324,3 +324,25 @@ fn losing_the_active_surface_mid_transfer_fails_the_upload_instead_of_leaving_it
     );
     assert!(upload.error.is_some(), "must surface a clear error");
 }
+
+#[test]
+fn the_send_files_binding_asks_for_a_file_chooser() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::SendFiles),
+        &mut outcome,
+    );
+    assert!(matches!(
+        &outcome.actions[..],
+        [ClientShellAction::ChooseFiles]
+    ));
+}
+
+#[test]
+fn send_files_defaults_to_prefix_u() {
+    let keybinds = crate::config::Config::default().keybinds();
+    assert_eq!(keybinds.send_files.labels(), vec!["prefix+u".to_owned()]);
+}

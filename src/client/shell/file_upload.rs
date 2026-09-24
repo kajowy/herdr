@@ -47,12 +47,10 @@ const DEFAULT_CHUNK_BYTES: u32 = 700_000;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 impl ClientShellState {
-    // `open_file_upload`, `toggle_file_upload_destination`, `start_file_upload`, and
-    // `cancel_file_upload` are the overlay's entry points; a later task wires them to the
-    // picker keybinding and the overlay's toggle/start/cancel controls, so nothing calls them
-    // outside tests yet.
-    #[allow(dead_code)]
-    pub(super) fn open_file_upload(
+    // `open_file_upload` is wired to the picker keybinding (prefix+u); `toggle_file_upload_destination`,
+    // `start_file_upload`, and `cancel_file_upload` are the overlay's remaining entry points, wired to
+    // its toggle/start/cancel controls by a later task, so nothing calls them outside tests yet.
+    pub(crate) fn open_file_upload(
         &mut self,
         selection: &[PathBuf],
         outcome: &mut ClientShellInput,

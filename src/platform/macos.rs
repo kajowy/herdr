@@ -723,6 +723,176 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     })
 }
 
+/// JXA that drives a real `NSOpenPanel`, so the user can pick files *and* directories.
+///
+/// AppleScript's `choose file` cannot return directories and `choose folder` cannot return
+/// files, so a single multi-select panel has to come from AppKit. The process is promoted to a
+/// regular app and activated first, otherwise the panel opens behind the terminal.
+const CHOOSER_JXA: &str = r#"ObjC.import('AppKit');
+var app = $.NSApplication.sharedApplication;
+app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
+app.activateIgnoringOtherApps(true);
+var panel = $.NSOpenPanel.openPanel;
+panel.canChooseFiles = true;
+panel.canChooseDirectories = true;
+panel.allowsMultipleSelection = true;
+panel.resolvesAliases = false;
+panel.message = 'Send to this machine';
+panel.prompt = 'Send';
+if (panel.runModal !== $.NSModalResponseOK) {
+    $.NSApplication.sharedApplication.terminate(null);
+}
+var urls = ObjC.unwrap(panel.URLs);
+var lines = [];
+for (var index = 0; index < urls.length; index++) {
+    lines.push(ObjC.unwrap(urls[index].path));
+}
+lines.join('\n');
+"#;
+
+/// AppleScript fallback used only when the ObjC bridge is unavailable. Files only.
+const CHOOSER_APPLESCRIPT: &str = "set picked to (choose file with prompt \
+\"Send to this machine\" with multiple selections allowed)\n\
+set out to \"\"\n\
+repeat with item_ref in picked\n\
+set out to out & POSIX path of item_ref & linefeed\n\
+end repeat\n\
+return out";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChooserSelection {
+    /// True when the AppleScript fallback ran, so directories could not be offered.
+    pub files_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChooserFailure {
+    Cancelled,
+    BridgeUnavailable,
+}
+
+/// Ask the user for local files and directories with the native panel.
+///
+/// Blocks until the user answers, so callers must run this off any render or input loop.
+/// Returns `None` when the user cancelled or picked nothing.
+pub fn choose_files_for_upload() -> Option<(Vec<PathBuf>, FileChooserSelection)> {
+    match run_chooser(&["-l", "JavaScript", "-e", CHOOSER_JXA]) {
+        Ok(paths) if !paths.is_empty() => Some((paths, FileChooserSelection { files_only: false })),
+        Ok(_) => None,
+        Err(ChooserFailure::Cancelled) => None,
+        Err(ChooserFailure::BridgeUnavailable) => match run_chooser(&["-e", CHOOSER_APPLESCRIPT]) {
+            Ok(paths) if !paths.is_empty() => {
+                Some((paths, FileChooserSelection { files_only: true }))
+            }
+            _ => None,
+        },
+    }
+}
+
+fn run_chooser(args: &[&str]) -> Result<Vec<PathBuf>, ChooserFailure> {
+    let output = Command::new("osascript")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| ChooserFailure::BridgeUnavailable)?;
+    if !output.status.success() {
+        return Err(classify_chooser_failure(&output.stderr));
+    }
+    Ok(parse_chooser_output(&output.stdout))
+}
+
+/// A missing AppKit or a JXA syntax failure must fall back; a user cancel must not.
+fn classify_chooser_failure(stderr: &[u8]) -> ChooserFailure {
+    let text = String::from_utf8_lossy(stderr);
+    if text.contains("-128") || text.contains("User canceled") || text.trim().is_empty() {
+        ChooserFailure::Cancelled
+    } else {
+        ChooserFailure::BridgeUnavailable
+    }
+}
+
+/// Split one path per line, dropping entries that vanished between choosing and reading.
+fn parse_chooser_output(stdout: &[u8]) -> Vec<PathBuf> {
+    parse_chooser_output_bytes(stdout)
+        .into_iter()
+        .filter(|path| std::fs::symlink_metadata(path).is_ok())
+        .collect()
+}
+
+/// Byte-level split that keeps paths the filesystem allows but UTF-8 does not.
+fn parse_chooser_output_bytes(stdout: &[u8]) -> Vec<PathBuf> {
+    stdout
+        .split(|byte| *byte == b'\n')
+        .map(|line| {
+            let start = line
+                .iter()
+                .position(|byte| !byte.is_ascii_whitespace())
+                .unwrap_or(line.len());
+            let end = line
+                .iter()
+                .rposition(|byte| !byte.is_ascii_whitespace())
+                .map_or(start, |index| index + 1);
+            &line[start..end]
+        })
+        .filter(|line| !line.is_empty())
+        .map(|line| PathBuf::from(OsStr::from_bytes(line)))
+        .collect()
+}
+
+#[cfg(test)]
+mod chooser_tests {
+    use super::*;
+
+    #[test]
+    fn chooser_output_parsing_handles_real_panel_shapes() {
+        let dir = std::env::temp_dir().join(format!("herdr-chooser-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("tree")).unwrap();
+        std::fs::write(dir.join("a b.txt"), b"x").unwrap();
+        let present_file = dir.join("a b.txt");
+        let present_dir = dir.join("tree");
+        let missing = dir.join("gone.txt");
+
+        let stdout = format!(
+            "{}\n{}\n{}\n\n",
+            present_file.display(),
+            present_dir.display(),
+            missing.display()
+        );
+        let parsed = parse_chooser_output(stdout.as_bytes());
+        assert_eq!(parsed, vec![present_file, present_dir]);
+
+        assert!(parse_chooser_output(b"").is_empty());
+        assert!(parse_chooser_output(b"   \n\n").is_empty());
+    }
+
+    #[test]
+    fn chooser_output_parsing_keeps_non_utf8_paths() {
+        // A real panel can return bytes that are not valid UTF-8; they must survive as a path.
+        let mut stdout = b"/tmp/".to_vec();
+        stdout.extend_from_slice(&[0xff, 0xfe]);
+        stdout.push(b'\n');
+        let parsed = parse_chooser_output_bytes(&stdout);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0]
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(&[0xff, 0xfe]));
+    }
+
+    #[test]
+    fn a_bridge_error_is_distinguished_from_a_cancel() {
+        assert_eq!(
+            classify_chooser_failure(b"execution error: Can't get AppKit. (-1728)"),
+            ChooserFailure::BridgeUnavailable
+        );
+        assert_eq!(
+            classify_chooser_failure(b"execution error: User canceled. (-128)"),
+            ChooserFailure::Cancelled
+        );
+        assert_eq!(classify_chooser_failure(b""), ChooserFailure::Cancelled);
+    }
+}
+
 fn unique_timestamp_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

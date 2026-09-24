@@ -284,6 +284,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
         None,
         &mut Vec::new(),
         &mut scheduled,
+        &tx,
     )
     .unwrap();
     let next = scheduled.take().or_else(|| rx.try_recv().ok());
@@ -309,6 +310,7 @@ fn dispatcher_cancels_worktree_requests_on_frozen_surface_or_failed_send() {
         endpoints.set_surface_active(&ClientEndpointId::Local, fail_send);
         let mut commands = EndpointCommands::default();
         let mut scheduled = None;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let (replay, repaint) = crate::client::shell_runtime::dispatch_client_shell_actions(
             actions,
             &mut commands,
@@ -316,6 +318,7 @@ fn dispatcher_cancels_worktree_requests_on_frozen_surface_or_failed_send() {
             Some(&mut state),
             &mut Vec::new(),
             &mut scheduled,
+            &tx,
         )
         .unwrap();
         assert!(repaint);

@@ -7,6 +7,7 @@ pub(super) fn dispatch_client_shell_actions(
     mut shell: Option<&mut shell::ClientShellState>,
     detached_process_children: &mut Vec<std::process::Child>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
@@ -53,6 +54,26 @@ pub(super) fn dispatch_client_shell_actions(
                     ?action,
                     "client shell action awaits its presentation family"
                 );
+            }
+            shell::ClientShellAction::ChooseFiles => {
+                let tx = file_chooser_tx.clone();
+                std::thread::Builder::new()
+                    .name("herdr-file-chooser".into())
+                    .spawn(move || {
+                        let (paths, selection) = crate::platform::choose_files_for_upload()
+                            .unwrap_or_else(|| {
+                                (
+                                    Vec::new(),
+                                    crate::platform::FileChooserSelection { files_only: false },
+                                )
+                            });
+                        let _ = tx.blocking_send(ClientLoopEvent::FileChooserResult {
+                            paths,
+                            files_only: selection.files_only,
+                        });
+                    })
+                    .map(|_| ())
+                    .unwrap_or_else(|err| warn!(err = %err, "could not start the file chooser"));
             }
         }
     }
@@ -215,6 +236,7 @@ pub(super) fn begin_endpoint_activation(
     force: bool,
     now: std::time::Instant,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(), ClientError> {
     state.deferred_local_activation = None;
     if endpoint_id.is_local() && !local_activation_metadata_ready(state, endpoints) {
@@ -268,6 +290,7 @@ pub(super) fn begin_endpoint_activation(
                 Some(shell),
                 &mut state.detached_process_children,
                 scheduled_activation,
+                file_chooser_tx,
             )?;
             if repaint {
                 if let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1) {
@@ -686,6 +709,7 @@ pub(super) fn finish_client_shell_input(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
     apply_client_shell_input_source_changes(state, prefix_input_source);
     if outcome.detach {
@@ -725,6 +749,7 @@ pub(super) fn finish_client_shell_input(
         state.shell.as_mut(),
         &mut state.detached_process_children,
         scheduled_activation,
+        file_chooser_tx,
     )?;
     let frame = if dispatch_repaint {
         state

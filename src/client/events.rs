@@ -31,4 +31,9 @@ pub(super) enum ClientLoopEvent {
         force: bool,
     },
     Timer,
+    FileChooserResult {
+        paths: Vec<std::path::PathBuf>,
+        /// True when the AppleScript fallback ran, so directories were not offered.
+        files_only: bool,
+    },
 }
