@@ -217,6 +217,70 @@ fn the_chunk_loop_commits_at_the_size_declared_at_begin_not_the_walk_time_size()
 }
 
 #[test]
+fn a_name_this_server_refuses_skips_that_entry_and_keeps_going() {
+    // The server refuses a name (leading dot, too long, a component it will not write) with
+    // `invalid_file_path`. That must cost one entry, not the whole selection: the remaining
+    // files still go, the refused one is reported as skipped, and the overlay shows no error.
+    let root = scratch_file("skip", b"x")
+        .parent()
+        .expect("scratch parent")
+        .join("tree");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"aaaa").unwrap();
+    std::fs::write(root.join("b.txt"), b"bbbb").unwrap();
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let boot_id = state.snapshot.as_ref().unwrap().boot_id.clone();
+    let mut outcome = ClientShellInput::default();
+    state.open_file_upload(std::slice::from_ref(&root), &mut outcome);
+
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    // Entry 0 is the directory itself; refuse it and the two files must still be attempted.
+    let mut request_id = request_id(&outcome.actions).to_owned();
+    let mut refused = 0usize;
+    let mut begun_files = Vec::new();
+    loop {
+        let (_, actions) = state.handle_endpoint_result(
+            &boot_id,
+            &request_id,
+            Err(ClientShellEndpointError {
+                code: Some("invalid_file_path".into()),
+                message: "this file name is not allowed: leading dot".into(),
+            }),
+        );
+        refused += 1;
+        let Some(ClientShellAction::Endpoint { request, .. }) = actions.first() else {
+            break;
+        };
+        let crate::api::schema::Method::FilePutBegin(params) = &request.method else {
+            panic!("expected the next entry's begin, not a chunk");
+        };
+        begun_files.push(params.relative_path.clone().unwrap_or_default());
+        request_id = request.id.clone();
+    }
+
+    assert_eq!(refused, 3, "every entry must get its own begin");
+    begun_files.sort();
+    assert_eq!(begun_files, ["tree/a.txt", "tree/b.txt"]);
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+        panic!("expected the upload overlay to stay open");
+    };
+    assert!(upload.done, "the upload must finish rather than hang");
+    assert_eq!(
+        upload.error, None,
+        "a refused name is not an upload-wide failure"
+    );
+    assert_eq!(upload.skipped.len(), 3, "{:?}", upload.skipped);
+    assert!(upload
+        .skipped
+        .iter()
+        .any(|entry| entry.contains("tree/a.txt")));
+}
+
+#[test]
 fn a_failed_chunk_surfaces_one_error_and_stops() {
     let path = scratch_file("failure", &[1u8; 4]);
     let (mut state, boot_id) = shell_with_selection(&path);

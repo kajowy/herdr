@@ -204,6 +204,12 @@ impl ClientShellState {
                 complete
             }
             Ok(_) => return self.fail_file_upload("this server sent an unexpected response"),
+            // A name this server will not accept is this entry's problem, not the selection's:
+            // skip it and keep going, so one refused name cannot leave a half-populated tree
+            // behind with no way to continue. Every other `begin` error still fails the upload.
+            Err(error) if error.code.as_deref() == Some("invalid_file_path") => {
+                return self.skip_file_upload_entry(error.message);
+            }
             Err(error) => return self.fail_file_upload(error.message),
         };
         let mut outcome = ClientShellInput::default();
@@ -370,6 +376,33 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
+    /// Record the entry currently in flight as skipped and advance to the next one. Mirrors
+    /// `complete_file_put_commit`'s advance, minus the committed path.
+    fn skip_file_upload_entry(&mut self, reason: String) -> (bool, Vec<ClientShellAction>) {
+        let finished = {
+            let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
+                return (false, Vec::new());
+            };
+            let label = upload
+                .entries
+                .get(upload.index)
+                .map(entry_label)
+                .unwrap_or_else(|| "this entry".to_owned());
+            upload.skipped.push(format!("{label}: {reason}"));
+            upload.transfer_id = None;
+            upload.offset = 0;
+            upload.transfer_bytes = 0;
+            upload.index = upload.index.saturating_add(1);
+            upload.index >= upload.entries.len()
+        };
+        let mut outcome = ClientShellInput::default();
+        if finished {
+            return self.finish_file_upload();
+        }
+        self.send_file_put_begin(&mut outcome);
+        (true, outcome.actions)
+    }
+
     fn fail_file_upload(&mut self, message: impl Into<String>) -> (bool, Vec<ClientShellAction>) {
         if let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() {
             upload.running = false;
@@ -416,6 +449,22 @@ impl ClientShellState {
             ),
         }
     }
+}
+
+/// How one entry is named to the user: its path relative to the picked directory, or the picked
+/// file's own name.
+fn entry_label(entry: &file_collect::CollectedEntry) -> String {
+    entry
+        .relative_path
+        .clone()
+        .or_else(|| {
+            entry
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "upload".to_owned())
 }
 
 /// Characters a herdr-written path may contain. Everything else, including every control
