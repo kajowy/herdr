@@ -1,5 +1,6 @@
 use super::*;
 use crate::client::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::client::shell::file_upload::quote_upload_path;
 
 fn scratch_file(label: &str, data: &[u8]) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -391,4 +392,140 @@ fn the_send_files_binding_asks_for_a_file_chooser() {
 fn send_files_defaults_to_prefix_u() {
     let keybinds = crate::config::Config::default().keybinds();
     assert_eq!(keybinds.send_files.labels(), vec!["prefix+u".to_owned()]);
+}
+
+fn finish_upload(pane_runs_agent: bool) -> (ClientShellState, Vec<ClientShellAction>) {
+    let path = scratch_file("finish", &[1u8; 4]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let begin_id = request_id(&outcome.actions).to_owned();
+    let (_, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &begin_id,
+        Ok(crate::api::schema::ResponseResult::FilePutBegan {
+            transfer_id: "ft-1-1".into(),
+            chunk_bytes: 4,
+            destination_label: "/home/tester/herdr-inbox".into(),
+            complete: false,
+            path: String::new(),
+        }),
+    );
+    // The declared 4-byte file fits in one 4-byte chunk, so this chunk's `next_offset` lands
+    // exactly on the declared size and the loop sends the commit next.
+    let chunk_id = request_id(&actions).to_owned();
+    let (_, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &chunk_id,
+        Ok(crate::api::schema::ResponseResult::FilePutChunkAccepted {
+            transfer_id: "ft-1-1".into(),
+            next_offset: 4,
+        }),
+    );
+    let commit_id = request_id(&actions).to_owned();
+
+    if pane_runs_agent {
+        let focused_pane_id = state
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.focused_pane_id.clone())
+            .expect("focused pane id");
+        if let Some(snapshot) = state.snapshot.as_mut() {
+            snapshot.agents.push(crate::protocol::ClientShellAgent {
+                pane_id: focused_pane_id,
+                workspace_id: "ws_1".into(),
+                tab_id: "tab_1".into(),
+                name: None,
+                display_agent: None,
+                agent: None,
+                title: None,
+                terminal_title: None,
+                terminal_title_stripped: None,
+                agent_status: crate::api::schema::AgentStatus::Idle,
+                state_change_seq: 1,
+                state_labels: Vec::new(),
+                tokens: Vec::new(),
+                focused: true,
+            });
+        }
+    }
+
+    let (_, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &commit_id,
+        Ok(crate::api::schema::ResponseResult::FilePutCommitted {
+            transfer_id: "ft-1-1".into(),
+            path: "/home/tester/herdr-inbox/payload.bin".into(),
+            bytes: 4,
+        }),
+    );
+    (state, actions)
+}
+
+#[test]
+fn a_hostile_server_path_is_never_pasted() {
+    for hostile in [
+        "/home/t/a\nrm -rf /",
+        "/home/t/a\x1b[201~; id",
+        "/home/t/a\r",
+        "/home/t/a\u{0}b",
+    ] {
+        assert_eq!(quote_upload_path(hostile), None, "{hostile:?} was accepted");
+    }
+    assert_eq!(
+        quote_upload_path("/home/t/herdr-inbox/report 2026.txt").as_deref(),
+        Some("'/home/t/herdr-inbox/report 2026.txt'")
+    );
+    assert_eq!(
+        quote_upload_path("/home/t/herdr-inbox/report.txt").as_deref(),
+        Some("/home/t/herdr-inbox/report.txt")
+    );
+    assert_eq!(
+        quote_upload_path("/home/t/a'b.txt").as_deref(),
+        Some("'/home/t/a'\\''b.txt'")
+    );
+}
+
+#[test]
+fn quote_upload_path_neutralizes_shell_metacharacters_via_single_quoting() {
+    for (path, expected) in [
+        ("/home/t/a\"b.txt", "'/home/t/a\"b.txt'"),
+        ("/home/t/$(rm -rf /).txt", "'/home/t/$(rm -rf /).txt'"),
+        ("/home/t/`id`.txt", "'/home/t/`id`.txt'"),
+        ("/home/t/héllo/résumé.txt", "'/home/t/héllo/résumé.txt'"),
+        ("   ", "'   '"),
+    ] {
+        assert_eq!(
+            quote_upload_path(path).as_deref(),
+            Some(expected),
+            "{path:?} was not safely single-quoted"
+        );
+    }
+    // A leading dash carries no shell meaning here: this is a pasted string, not an argv
+    // element, so nothing downstream can parse it as an option flag.
+    assert_eq!(
+        quote_upload_path("/home/t/-rf.txt").as_deref(),
+        Some("/home/t/-rf.txt")
+    );
+}
+
+#[test]
+fn a_finished_transfer_pastes_into_a_shell_pane() {
+    let (state, actions) = finish_upload(false);
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::PastePane { text, .. }]
+            if text == "/home/tester/herdr-inbox/payload.bin"
+    ));
+    assert!(state.overlay.is_some());
+}
+
+#[test]
+fn a_finished_transfer_copies_instead_of_pasting_into_an_agent_pane() {
+    let (_state, actions) = finish_upload(true);
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::ClipboardWrite(bytes)]
+            if bytes == b"/home/tester/herdr-inbox/payload.bin"
+    ));
 }

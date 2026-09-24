@@ -259,6 +259,11 @@ pub(crate) enum ClientShellAction {
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
     ChooseFiles,
+    /// Paste one client-built, client-quoted string into a stable pane target.
+    PastePane {
+        pane_id: String,
+        text: String,
+    },
 }
 
 #[derive(Default)]

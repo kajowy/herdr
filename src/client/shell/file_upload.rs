@@ -45,9 +45,10 @@ const DEFAULT_CHUNK_BYTES: u32 = 700_000;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 impl ClientShellState {
-    // `open_file_upload` is wired to the picker keybinding (prefix+u); `toggle_file_upload_destination`,
-    // `start_file_upload`, and `cancel_file_upload` are the overlay's remaining entry points, wired to
-    // its toggle/start/cancel controls by a later task, so nothing calls them outside tests yet.
+    // `open_file_upload` is wired to the picker keybinding (prefix+u); `start_file_upload` and
+    // `cancel_file_upload` are wired to the overlay's start/cancel controls.
+    // `toggle_file_upload_destination` is wired to its toggle control by a later task, so nothing
+    // calls it outside tests yet.
     pub(crate) fn open_file_upload(
         &mut self,
         selection: &[PathBuf],
@@ -100,7 +101,6 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    #[allow(dead_code)]
     pub(super) fn start_file_upload(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
             return;
@@ -350,7 +350,6 @@ impl ClientShellState {
         (true, outcome.actions)
     }
 
-    #[allow(dead_code)]
     pub(super) fn cancel_file_upload(&mut self, outcome: &mut ClientShellInput) {
         let pending = match self.overlay.take() {
             Some(ClientShellOverlay::FileUpload(upload)) => upload.transfer_id,
@@ -380,10 +379,68 @@ impl ClientShellState {
     }
 
     fn finish_file_upload(&mut self) -> (bool, Vec<ClientShellAction>) {
-        if let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() {
+        let (committed, pane_id) = {
+            let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
+                return (false, Vec::new());
+            };
             upload.running = false;
             upload.done = true;
+            (upload.committed.clone(), upload.pane_id.clone())
+        };
+        // A directory-only selection commits no files, so there is nothing to hand back.
+        if committed.is_empty() {
+            return (true, Vec::new());
         }
-        (true, Vec::new())
+        let Some(quoted) = committed
+            .iter()
+            .map(|path| quote_upload_path(path))
+            .collect::<Option<Vec<String>>>()
+        else {
+            if let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() {
+                upload.error =
+                    Some("the server reported a path this client will not repeat".to_owned());
+            }
+            return (true, Vec::new());
+        };
+        let text = quoted.join(" ");
+        let pane_runs_agent = pane_id.as_deref().is_some_and(|pane_id| {
+            self.snapshot.as_deref().is_some_and(|snapshot| {
+                snapshot.agents.iter().any(|agent| agent.pane_id == pane_id)
+            })
+        });
+        match pane_id.filter(|_| !pane_runs_agent) {
+            Some(pane_id) => (true, vec![ClientShellAction::PastePane { pane_id, text }]),
+            None => (
+                true,
+                vec![ClientShellAction::ClipboardWrite(text.into_bytes())],
+            ),
+        }
     }
+}
+
+/// Characters a herdr-written path may contain. Everything else, including every control
+/// character and every bracketed-paste terminator byte, disqualifies the path from the pane.
+pub(super) fn quote_upload_path(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let acceptable = path.chars().all(|ch| {
+        ch == ' '
+            || ch == '\''
+            || (ch.is_ascii_graphic() && ch != '\u{7f}')
+            || (!ch.is_control() && ch.is_alphanumeric())
+    });
+    if !acceptable {
+        return None;
+    }
+    if path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+            )
+    }) {
+        return Some(path.to_owned());
+    }
+    Some(format!("'{}'", path.replace('\'', "'\\''")))
 }

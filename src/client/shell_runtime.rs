@@ -29,6 +29,16 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 crate::selection::write_osc52_bytes(&bytes);
             }
+            shell::ClientShellAction::PastePane { pane_id, text } => {
+                let active = endpoints.active_id().clone();
+                let message = ClientMessage::ClientShellPaneInput {
+                    pane_id,
+                    events: vec![crate::protocol::ClientPaneInputEvent::Paste(text)],
+                };
+                if endpoints.send_to(&active, &message) != endpoint::EndpointSendOutcome::Sent {
+                    warn!("could not deliver the uploaded path to the pane");
+                }
+            }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target,
