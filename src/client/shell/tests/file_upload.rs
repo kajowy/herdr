@@ -318,6 +318,45 @@ fn a_name_this_server_refuses_skips_that_entry_and_keeps_going() {
 }
 
 #[test]
+fn cancelling_during_the_begin_round_trip_still_aborts_the_transfer() {
+    // `cancel_file_upload` runs before any `transfer_id` exists, so it cannot abort. The begin
+    // response then arrives with an id nothing owns; without an abort here the server keeps that
+    // transfer and its temp file, and every later upload on this connection gets `transfer_busy`.
+    let path = scratch_file("cancel-race", &[2u8; 20]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let begin_id = request_id(&outcome.actions).to_owned();
+
+    let mut outcome = ClientShellInput::default();
+    state.cancel_file_upload(&mut outcome);
+    assert!(state.overlay.is_none());
+    assert!(
+        outcome.actions.is_empty(),
+        "there is no transfer id to abort yet"
+    );
+
+    let (_, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &begin_id,
+        Ok(crate::api::schema::ResponseResult::FilePutBegan {
+            transfer_id: "ft-1-7".into(),
+            chunk_bytes: 8,
+            destination_label: "/home/tester/herdr-inbox".into(),
+            complete: false,
+            path: String::new(),
+        }),
+    );
+    let [ClientShellAction::Endpoint { request, .. }] = &actions[..] else {
+        panic!("expected file.put.abort for the orphaned transfer, got {actions:?}");
+    };
+    let crate::api::schema::Method::FilePutAbort(params) = &request.method else {
+        panic!("expected file.put.abort");
+    };
+    assert_eq!(params.transfer_id, "ft-1-7");
+}
+
+#[test]
 fn a_failed_chunk_surfaces_one_error_and_stops() {
     let path = scratch_file("failure", &[1u8; 4]);
     let (mut state, boot_id) = shell_with_selection(&path);

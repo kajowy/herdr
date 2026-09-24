@@ -189,6 +189,9 @@ impl ClientShellState {
                 complete,
                 ..
             }) => {
+                if !matches!(self.overlay, Some(ClientShellOverlay::FileUpload(_))) {
+                    return self.abort_orphaned_transfer(transfer_id, complete);
+                }
                 let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
                     return (false, Vec::new());
                 };
@@ -379,6 +382,30 @@ impl ClientShellState {
             );
         }
         outcome.repaint = true;
+    }
+
+    /// A `begin` answered after the overlay is gone (the user cancelled while it was in flight):
+    /// `cancel_file_upload` could not abort a transfer id it had never seen. The server is holding
+    /// an `ActiveTransfer` and its temp file, and that one transfer per connection means every
+    /// later upload would get `transfer_busy` until the client reconnects, so abort it here. A
+    /// `complete` entry (a directory) left nothing open and needs no abort.
+    fn abort_orphaned_transfer(
+        &mut self,
+        transfer_id: String,
+        complete: bool,
+    ) -> (bool, Vec<ClientShellAction>) {
+        if complete {
+            return (false, Vec::new());
+        }
+        let mut outcome = ClientShellInput::default();
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::FilePutAbort(crate::api::schema::FilePutAbortParams {
+                transfer_id,
+            }),
+            PendingEndpointKind::FilePutAbort,
+            &mut outcome,
+        );
+        (outcome.repaint, outcome.actions)
     }
 
     /// Record the entry currently in flight as skipped and advance to the next one. Mirrors
