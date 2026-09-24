@@ -434,6 +434,50 @@ fn a_second_connection_cannot_drive_the_first_connections_transfer() {
         support::read_endpoint_response(&mut stream2, Duration::from_secs(10)).unwrap();
     assert_eq!(refused_commit["error"]["code"], "transfer_not_found");
 
+    // Positive control: the same code for a transfer id that never existed, and then a successful
+    // chunk on the owning connection. Without both, `transfer_not_found` above could be passing
+    // for the wrong reason — a rejected request shape, or a transfer that was never really open.
+    support::send_endpoint_request(
+        &mut stream1,
+        &boot_id1,
+        &json!({
+            "id": "i3b",
+            "method": "file.put.chunk",
+            "params": {
+                "transfer_id": "ft-nonexistent-0",
+                "offset": 0,
+                "data_b64": support::base64_standard(&data)
+            }
+        }),
+    )
+    .unwrap();
+    let bogus = support::read_endpoint_response(&mut stream1, Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        bogus["error"]["code"], "transfer_not_found",
+        "a malformed id on the owning connection must get the same code: {bogus}"
+    );
+
+    support::send_endpoint_request(
+        &mut stream1,
+        &boot_id1,
+        &json!({
+            "id": "i3c",
+            "method": "file.put.chunk",
+            "params": {
+                "transfer_id": transfer_id,
+                "offset": 0,
+                "data_b64": support::base64_standard(&data)
+            }
+        }),
+    )
+    .unwrap();
+    let accepted = support::read_endpoint_response(&mut stream1, Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        accepted["result"]["next_offset"],
+        data.len(),
+        "the owning connection must be able to drive its own transfer: {accepted}"
+    );
+
     // Clean up on the owning connection so the transfer does not leak a temp file.
     support::send_endpoint_request(
         &mut stream1,

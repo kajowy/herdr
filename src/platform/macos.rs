@@ -761,12 +761,17 @@ if (panel.runModal !== $.NSModalResponseOK) {
     for (var index = 0; index < urls.length; index++) {
         lines.push(ObjC.unwrap(urls[index].path));
     }
-    result = lines.join('\n');
+    result = lines.join('\u0000');
 }
 result;
 "#;
 
 /// AppleScript fallback used only when the ObjC bridge is unavailable. Files only.
+/// Byte [`CHOOSER_JXA`] joins its paths with. NUL is the one byte a POSIX path cannot contain, so
+/// splitting on it keeps a filename that contains a newline intact. `osascript` passes the byte
+/// through its stdout unchanged.
+const CHOOSER_JXA_SEPARATOR: u8 = 0;
+
 const CHOOSER_APPLESCRIPT: &str = "set picked to (choose file with prompt \
 \"Send to this machine\" with multiple selections allowed)\n\
 set out to \"\"\n\
@@ -821,8 +826,11 @@ enum ChooserFailure {
 /// Blocks until the user answers, so callers must run this off any render or input loop.
 pub fn choose_files_for_upload() -> FileChooserOutcome {
     resolve_chooser_outcome(
-        run_chooser(&["-l", "JavaScript", "-e", CHOOSER_JXA]),
-        || run_chooser(&["-e", CHOOSER_APPLESCRIPT]),
+        run_chooser(
+            &["-l", "JavaScript", "-e", CHOOSER_JXA],
+            CHOOSER_JXA_SEPARATOR,
+        ),
+        || run_chooser(&["-e", CHOOSER_APPLESCRIPT], b'\n'),
     )
 }
 
@@ -864,13 +872,18 @@ fn resolve_chooser_outcome(
 /// `Ok` is only returned when at least one path was selected; an empty selection is always
 /// classified through [`classify_chooser_output`] instead, so callers never have to separately
 /// check for an empty `Ok`.
-fn run_chooser(args: &[&str]) -> Result<Vec<PathBuf>, ChooserFailure> {
+fn run_chooser(args: &[&str], separator: u8) -> Result<Vec<PathBuf>, ChooserFailure> {
     let output = Command::new("osascript")
         .args(args)
         .stdin(Stdio::null())
         .output()
         .map_err(|_| ChooserFailure::BridgeUnavailable)?;
-    classify_chooser_output(&output.stdout, output.status.success(), &output.stderr)
+    classify_chooser_output(
+        &output.stdout,
+        output.status.success(),
+        &output.stderr,
+        separator,
+    )
 }
 
 /// Pure classification of one `osascript` run's captured output, used both by [`run_chooser`]
@@ -879,11 +892,12 @@ fn classify_chooser_output(
     stdout: &[u8],
     exit_success: bool,
     stderr: &[u8],
+    separator: u8,
 ) -> Result<Vec<PathBuf>, ChooserFailure> {
     if is_cancelled_sentinel(stdout) {
         return Err(ChooserFailure::Cancelled);
     }
-    let paths = parse_chooser_output(stdout);
+    let paths = parse_chooser_output(stdout, separator);
     if !paths.is_empty() {
         return Ok(paths);
     }
@@ -928,17 +942,24 @@ fn classify_chooser_failure(stderr: &[u8]) -> ChooserFailure {
 }
 
 /// Split one path per line, dropping entries that vanished between choosing and reading.
-fn parse_chooser_output(stdout: &[u8]) -> Vec<PathBuf> {
-    parse_chooser_output_bytes(stdout)
+fn parse_chooser_output(stdout: &[u8], separator: u8) -> Vec<PathBuf> {
+    parse_chooser_output_bytes(stdout, separator)
         .into_iter()
         .filter(|path| std::fs::symlink_metadata(path).is_ok())
         .collect()
 }
 
 /// Byte-level split that keeps paths the filesystem allows but UTF-8 does not.
-fn parse_chooser_output_bytes(stdout: &[u8]) -> Vec<PathBuf> {
+///
+/// `separator` is the byte the script joined its paths with: NUL for [`CHOOSER_JXA`], which no
+/// path can contain, so a macOS filename containing a newline survives instead of being split in
+/// two and dropped as two nonexistent paths. The AppleScript fallback can only emit linefeeds, so
+/// it passes `b'\n'` and keeps that limitation. Surrounding ASCII whitespace is still trimmed from
+/// every field (osascript appends a trailing newline of its own), so a name that begins or ends
+/// with whitespace is not preserved; an interior newline is.
+fn parse_chooser_output_bytes(stdout: &[u8], separator: u8) -> Vec<PathBuf> {
     stdout
-        .split(|byte| *byte == b'\n')
+        .split(|byte| *byte == separator)
         .map(|line| {
             let start = line
                 .iter()
@@ -974,11 +995,44 @@ mod chooser_tests {
             present_dir.display(),
             missing.display()
         );
-        let parsed = parse_chooser_output(stdout.as_bytes());
+        let parsed = parse_chooser_output(stdout.as_bytes(), b'\n');
         assert_eq!(parsed, vec![present_file, present_dir]);
 
-        assert!(parse_chooser_output(b"").is_empty());
-        assert!(parse_chooser_output(b"   \n\n").is_empty());
+        assert!(parse_chooser_output(b"", b'\n').is_empty());
+        assert!(parse_chooser_output(b"   \n\n", b'\n').is_empty());
+    }
+
+    #[test]
+    fn a_filename_containing_a_newline_survives_the_nul_separated_panel_output() {
+        // macOS allows a newline in a filename. Splitting the panel's output on newlines turned
+        // such a name into two nonexistent paths and dropped the selection silently; NUL is the
+        // one byte a path cannot contain, so it separates the fields unambiguously.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-chooser-newline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let awkward = dir.join("two\nlines.txt");
+        let plain = dir.join("plain.txt");
+        std::fs::write(&awkward, b"x").unwrap();
+        std::fs::write(&plain, b"x").unwrap();
+
+        let mut stdout = awkward.as_os_str().as_encoded_bytes().to_vec();
+        stdout.push(CHOOSER_JXA_SEPARATOR);
+        stdout.extend_from_slice(plain.as_os_str().as_encoded_bytes());
+        // osascript appends its own trailing newline.
+        stdout.push(b'\n');
+
+        assert_eq!(
+            parse_chooser_output(&stdout, CHOOSER_JXA_SEPARATOR),
+            vec![awkward.clone(), plain]
+        );
+        // The old newline split loses the file entirely rather than sending the wrong one.
+        assert!(!parse_chooser_output(&stdout, b'\n').contains(&awkward));
     }
 
     #[test]
@@ -987,7 +1041,7 @@ mod chooser_tests {
         let mut stdout = b"/tmp/".to_vec();
         stdout.extend_from_slice(&[0xff, 0xfe]);
         stdout.push(b'\n');
-        let parsed = parse_chooser_output_bytes(&stdout);
+        let parsed = parse_chooser_output_bytes(&stdout, b'\n');
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0]
             .as_os_str()
@@ -1005,13 +1059,18 @@ mod chooser_tests {
     #[test]
     fn a_sentinel_cancel_is_recognized_before_any_path_parsing() {
         assert_eq!(
-            classify_chooser_output(CHOOSER_CANCELLED_SENTINEL.as_bytes(), true, b""),
+            classify_chooser_output(
+                CHOOSER_CANCELLED_SENTINEL.as_bytes(),
+                true,
+                b"",
+                CHOOSER_JXA_SEPARATOR,
+            ),
             Err(ChooserFailure::Cancelled)
         );
         // A real run's stdout carries a trailing newline; the sentinel must still match trimmed.
         let with_newline = format!("{CHOOSER_CANCELLED_SENTINEL}\n");
         assert_eq!(
-            classify_chooser_output(with_newline.as_bytes(), true, b""),
+            classify_chooser_output(with_newline.as_bytes(), true, b"", CHOOSER_JXA_SEPARATOR),
             Err(ChooserFailure::Cancelled)
         );
     }
@@ -1021,7 +1080,7 @@ mod chooser_tests {
         // The AppleScript fallback cannot print the sentinel, so a clean exit with nothing
         // selected must still resolve to a cancel through the generic path.
         assert_eq!(
-            classify_chooser_output(b"", true, b""),
+            classify_chooser_output(b"", true, b"", CHOOSER_JXA_SEPARATOR),
             Err(ChooserFailure::Cancelled)
         );
     }
@@ -1029,7 +1088,7 @@ mod chooser_tests {
     #[test]
     fn a_silent_failure_is_ambiguous_not_a_cancel_or_a_bridge_error() {
         assert_eq!(
-            classify_chooser_output(b"", false, b""),
+            classify_chooser_output(b"", false, b"", CHOOSER_JXA_SEPARATOR),
             Err(ChooserFailure::Ambiguous)
         );
     }
@@ -1037,7 +1096,12 @@ mod chooser_tests {
     #[test]
     fn a_positively_identified_cancel_marker_is_recognized_despite_the_nonzero_exit() {
         assert_eq!(
-            classify_chooser_output(b"", false, b"execution error: User canceled. (-128)"),
+            classify_chooser_output(
+                b"",
+                false,
+                b"execution error: User canceled. (-128)",
+                CHOOSER_JXA_SEPARATOR
+            ),
             Err(ChooserFailure::Cancelled)
         );
     }
@@ -1045,7 +1109,12 @@ mod chooser_tests {
     #[test]
     fn a_genuine_bridge_error_is_distinguished_from_a_cancel_or_an_ambiguous_failure() {
         assert_eq!(
-            classify_chooser_output(b"", false, b"execution error: Can't get AppKit. (-1728)"),
+            classify_chooser_output(
+                b"",
+                false,
+                b"execution error: Can't get AppKit. (-1728)",
+                CHOOSER_JXA_SEPARATOR
+            ),
             Err(ChooserFailure::BridgeUnavailable)
         );
     }
@@ -1053,7 +1122,12 @@ mod chooser_tests {
     #[test]
     fn an_unrecognized_nonempty_stderr_is_ambiguous_not_assumed_to_be_a_bridge_error() {
         assert_eq!(
-            classify_chooser_output(b"", false, b"execution error: something else went wrong"),
+            classify_chooser_output(
+                b"",
+                false,
+                b"execution error: something else went wrong",
+                CHOOSER_JXA_SEPARATOR
+            ),
             Err(ChooserFailure::Ambiguous)
         );
     }

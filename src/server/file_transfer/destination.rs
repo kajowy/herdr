@@ -231,9 +231,15 @@ fn create_directory_no_follow(path: &Path) -> io::Result<()> {
         .open(path)
         .map(|_| ())
         .map_err(|err| {
+            // Only the component name: this message reaches the client, which already knows the
+            // relative path it asked for, and the server's absolute layout is not its business.
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("this path");
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{} is not a real directory: {err}", path.display()),
+                format!("{name} is not a real directory: {err}"),
             )
         })
 }
@@ -446,6 +452,13 @@ mod tests {
         std::os::unix::fs::symlink(&real, dir.join("link")).unwrap();
         let err = ensure_directory_no_follow(&dir, &["link".to_owned()]).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // The refusal travels to the client, so it names the component, not the server's layout.
+        let message = err.to_string();
+        assert!(message.contains("link"), "{message}");
+        assert!(
+            !message.contains(&dir.display().to_string()),
+            "the server's absolute path leaked to the client: {message}"
+        );
     }
 
     fn tempdir() -> PathBuf {
