@@ -28,6 +28,12 @@ const STALE_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// calls `unique_target`, which itself scans up to 1000 numbered variants, so this only bounds
 /// how many times a genuine concurrent-creation race can make us start that scan over.
 const MAX_COMMIT_COLLISION_RETRIES: u32 = 8;
+/// How deep the start-up temp sweep descends. Uploaded paths are capped at 32 components, so this
+/// reaches everything an upload could have created.
+const REAP_MAX_DEPTH: usize = 32;
+/// Directory entries one sweep may examine. An inbox the user also keeps other things in must not
+/// be able to turn a reap into an unbounded walk.
+const REAP_ENTRY_BUDGET: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TransferError {
@@ -110,6 +116,10 @@ pub(crate) struct CommittedFile {
 
 impl FileTransferRegistry {
     pub(crate) fn new(config: FileTransferConfig) -> Self {
+        // Server start is the one moment a full sweep is affordable, and the only one that can
+        // reach an orphan left inside an uploaded subdirectory by a server that died mid-transfer.
+        // Bounded in depth and in entries examined so a large inbox cannot delay startup.
+        reap_stale_temp_tree(&config.inbox);
         Self {
             config,
             active: HashMap::new(),
@@ -163,9 +173,8 @@ impl FileTransferRegistry {
         }
 
         let root = destination::validate_root(root, home)?;
-        fs::create_dir_all(&root)
+        destination::create_root_private(&root)
             .map_err(|err| TransferError::from_io("transfer_write_failed", &err))?;
-        reap_stale_temp_files(&root);
 
         let mut components = destination::resolve_relative_path(
             entry.relative_path,
@@ -180,6 +189,11 @@ impl FileTransferRegistry {
         };
         let dir = destination::ensure_directory_no_follow(&root, &components)
             .map_err(|err| TransferError::from_io("transfer_write_failed", &err))?;
+        // Reap in the directory this transfer's temp file will live in, not just the root: temps
+        // are created beside the final file, so an orphan inside an uploaded subdirectory is only
+        // visible from here. One non-recursive `read_dir` of the directory we are about to write
+        // to; the recursive sweep happens once at server start.
+        reap_stale_temp_files(&dir);
         let destination_label = root.to_string_lossy().into_owned();
 
         self.next_transfer_serial = self.next_transfer_serial.saturating_add(1);
@@ -488,22 +502,51 @@ fn restrict_file_options(options: &mut fs::OpenOptions) {
 fn restrict_file_options(_options: &mut fs::OpenOptions) {}
 
 fn reap_stale_temp_files(dir: &Path) {
+    let mut budget = REAP_ENTRY_BUDGET;
+    reap_stale_temp_files_bounded(dir, 0, &mut budget);
+}
+
+/// Sweep `root` and everything under it once, for a server that died mid-transfer and left temp
+/// files inside uploaded subdirectories. Never called on a request path.
+fn reap_stale_temp_tree(root: &Path) {
+    let mut budget = REAP_ENTRY_BUDGET;
+    reap_stale_temp_files_bounded(root, REAP_MAX_DEPTH, &mut budget);
+}
+
+/// Remove stale temp files in `dir`, descending at most `depth` levels further. `budget` bounds
+/// the total number of directory entries examined across the whole sweep, so neither the start-up
+/// sweep nor a per-transfer reap can walk an unbounded tree.
+fn reap_stale_temp_files_bounded(dir: &Path, depth: usize, budget: &mut usize) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    let mut nested = Vec::new();
     for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().ends_with(TEMP_SUFFIX) {
-            continue;
+        if *budget == 0 {
+            return;
         }
+        *budget -= 1;
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
+        if metadata.is_dir() {
+            if depth > 0 {
+                nested.push(entry.path());
+            }
+            continue;
+        }
+        if !entry.file_name().to_string_lossy().ends_with(TEMP_SUFFIX) {
+            continue;
+        }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
         if modified.elapsed().unwrap_or_default() > STALE_TEMP_MAX_AGE {
             let _ = fs::remove_file(entry.path());
         }
+    }
+    for path in nested {
+        reap_stale_temp_files_bounded(&path, depth - 1, budget);
     }
 }
 
@@ -781,6 +824,69 @@ mod tests {
         registry.chunk(2, &accepted.transfer_id, 0, b"ab").unwrap();
         registry.forget_client(2);
         assert_eq!(std::fs::read_dir(&root).unwrap().flatten().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_inbox_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let home = scratch("inbox-mode");
+        let root = home.join("nested/herdr-inbox");
+        let mut registry = FileTransferRegistry::new(FileTransferConfig {
+            inbox: root.clone(),
+            max_file_bytes: 1024,
+            max_total_bytes: 4096,
+            chunk_bytes: 8,
+        });
+        registry
+            .begin(
+                1,
+                &root,
+                &home,
+                true,
+                file_entry("a.txt", &sha256_hex(b"abcd"), 4),
+            )
+            .unwrap();
+
+        for created in [home.join("nested"), root] {
+            let mode = std::fs::metadata(&created).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o700,
+                "{} must not be group- or world-readable",
+                created.display()
+            );
+        }
+    }
+
+    #[test]
+    fn stale_temp_files_are_reaped_at_start_including_inside_subdirectories() {
+        let home = scratch("reap");
+        let root = home.join("inbox");
+        std::fs::create_dir_all(root.join("tree/nested")).unwrap();
+        let stale_root = root.join(format!("ft-1-1{TEMP_SUFFIX}"));
+        let stale_nested = root.join(format!("tree/nested/ft-1-2{TEMP_SUFFIX}"));
+        let fresh = root.join(format!("tree/ft-1-3{TEMP_SUFFIX}"));
+        let keeper = root.join("tree/nested/real.txt");
+        for path in [&stale_root, &stale_nested, &fresh, &keeper] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - STALE_TEMP_MAX_AGE - Duration::from_secs(60);
+        for path in [&stale_root, &stale_nested] {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(old).unwrap();
+        }
+
+        let _registry = registry(&home);
+
+        assert!(!stale_root.exists(), "a stale temp in the root must go");
+        assert!(
+            !stale_nested.exists(),
+            "a stale temp inside an uploaded subdirectory must go too"
+        );
+        assert!(fresh.exists(), "a temp younger than the age bound stays");
+        assert!(keeper.exists(), "a real file is never touched");
     }
 
     /// The total-bytes cap is per connection. A surface deactivation is a routine UI event (the

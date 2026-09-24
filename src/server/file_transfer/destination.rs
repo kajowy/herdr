@@ -174,6 +174,26 @@ pub(crate) fn resolve_relative_path(
     Ok(components)
 }
 
+/// Create the destination root and any missing ancestor, owner-only.
+///
+/// `create_dir_all` would leave the inbox at whatever the umask allows (0755 by default), while
+/// the spec promises an owner-only inbox and every component created underneath already gets
+/// 0700 from `restrict_dir_permissions`. An existing directory keeps the permissions it has: this
+/// is the user's own tree and the root may legitimately be somewhere they already share.
+pub(crate) fn create_root_private(root: &Path) -> io::Result<()> {
+    if root.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = root.parent() {
+        create_root_private(parent)?;
+    }
+    match std::fs::create_dir(root) {
+        Ok(()) => restrict_dir_permissions(root),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 pub(crate) fn ensure_directory_no_follow(
     root: &Path,
     components: &[String],
@@ -271,12 +291,10 @@ fn restrict_dir_permissions(dir: &Path) -> io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-// Genuinely unreachable on Windows: the Windows `create_directory_no_follow` above refuses
-// outright and never calls this, unlike its Unix counterpart. Kept only so the Unix
-// implementation's call site does not need its own `#[cfg(unix)]` on the call, and so a future
-// Windows directory-creation implementation has a matching permissions hook ready to wire in.
+// Windows has no mode bits to set here. `create_root_private` calls this on every platform, so
+// this is a real no-op rather than dead code, and a future Windows implementation has the hook
+// ready.
 #[cfg(windows)]
-#[allow(dead_code)]
 fn restrict_dir_permissions(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
