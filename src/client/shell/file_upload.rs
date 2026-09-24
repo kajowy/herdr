@@ -26,6 +26,11 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) total_bytes: u64,
     pub(super) sent_bytes: u64,
     pub(super) transfer_id: Option<String>,
+    /// The size declared to the server in `file.put.begin` for the entry currently in flight
+    /// (from `hash_file` at send time, not the walk-time `CollectedEntry::bytes`, which may be
+    /// stale). The chunk loop must stop and commit based on this number, since it is the only
+    /// size the server ever saw.
+    pub(super) transfer_bytes: u64,
     pub(super) chunk_bytes: u32,
     pub(super) offset: u64,
     /// Final paths of committed files, in arrival order. Only these are pasted back.
@@ -68,6 +73,7 @@ impl ClientShellState {
             total_bytes,
             sent_bytes: 0,
             transfer_id: None,
+            transfer_bytes: 0,
             chunk_bytes: DEFAULT_CHUNK_BYTES,
             offset: 0,
             committed: Vec::new(),
@@ -161,6 +167,9 @@ impl ClientShellState {
         };
         upload.offset = 0;
         upload.transfer_id = None;
+        // Drive the chunk loop from the size just declared to the server, not the walk-time
+        // `entry.bytes`, which may be stale if the file changed size since the walk.
+        upload.transfer_bytes = bytes;
         if !self.push_endpoint_method_with_kind(
             crate::api::schema::Method::FilePutBegin(params),
             PendingEndpointKind::FilePutBegin,
@@ -239,17 +248,23 @@ impl ClientShellState {
                 upload.offset,
                 upload.chunk_bytes as usize,
                 transfer_id,
-                entry.bytes.saturating_sub(upload.offset),
+                // The declared size, not `entry.bytes`: the server only ever saw the former.
+                upload.transfer_bytes.saturating_sub(upload.offset),
             )
         };
         if remaining == 0 {
-            self.push_endpoint_method_with_kind(
+            // Unlike `send_file_put_begin`, a refused send here has nothing else pending: no
+            // request was queued, so nothing will ever time out to unstick the overlay. Fail it
+            // now rather than leave `running: true` forever.
+            if !self.push_endpoint_method_with_kind(
                 crate::api::schema::Method::FilePutCommit(
                     crate::api::schema::FilePutCommitParams { transfer_id },
                 ),
                 PendingEndpointKind::FilePutCommit,
                 outcome,
-            );
+            ) {
+                self.mark_file_upload_send_refused();
+            }
             return;
         }
         let take = chunk_bytes.min(remaining as usize);
@@ -263,7 +278,7 @@ impl ClientShellState {
             }
         };
         let data_b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-        self.push_endpoint_method_with_kind(
+        if !self.push_endpoint_method_with_kind(
             crate::api::schema::Method::FilePutChunk(crate::api::schema::FilePutChunkParams {
                 transfer_id,
                 offset,
@@ -271,7 +286,21 @@ impl ClientShellState {
             }),
             PendingEndpointKind::FilePutChunk,
             outcome,
-        );
+        ) {
+            self.mark_file_upload_send_refused();
+        }
+    }
+
+    /// The lane refused to carry a chunk or commit send (the endpoint is offline, or its surface
+    /// is no longer active): `push_endpoint_method_with_kind` already surfaced its own notice, but
+    /// nothing was queued, so nothing will ever time out to move this transfer forward or fail it
+    /// on its own. Fail it here instead of leaving the overlay `running` with no pending activity
+    /// and no way out but manual cancel.
+    fn mark_file_upload_send_refused(&mut self) {
+        if let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() {
+            upload.running = false;
+            upload.error = Some("Lost the connection to the server mid-transfer.".to_owned());
+        }
     }
 
     pub(super) fn complete_file_put_chunk(
