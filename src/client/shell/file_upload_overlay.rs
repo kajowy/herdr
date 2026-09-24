@@ -24,13 +24,9 @@ pub(super) fn render_file_upload_overlay(
             .add_modifier(Modifier::BOLD),
     );
 
-    let file_count = c
-        .entries
-        .iter()
-        .filter(|entry| matches!(entry.kind, crate::api::schema::FilePutEntryKind::File))
-        .count();
-    let directory_count = c.entries.len() - file_count;
-    let manifest = match (file_count, directory_count) {
+    // Counted once in `open_file_upload`: `entries` is immutable afterwards, and every chunk
+    // response repaints this overlay.
+    let manifest = match (c.file_count, c.directory_count) {
         (files, 0) => format!("{files} file(s), {}", human_bytes(c.total_bytes)),
         (0, dirs) => format!("{dirs} folder(s)"),
         (files, dirs) => {

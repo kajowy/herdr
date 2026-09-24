@@ -28,6 +28,11 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) boot_id: String,
     pub(super) pane_id: Option<String>,
     pub(super) total_bytes: u64,
+    /// Manifest counts, computed once from `entries` when the overlay opens. `entries` never
+    /// changes afterwards, and the render path must not recount them per frame: every chunk
+    /// response repaints.
+    pub(super) file_count: usize,
+    pub(super) directory_count: usize,
     pub(super) sent_bytes: u64,
     pub(super) transfer_id: Option<String>,
     /// The size declared to the server in `file.put.begin` for the entry currently in flight
@@ -65,6 +70,12 @@ impl ClientShellState {
             return;
         }
         let total_bytes = collection.entries.iter().map(|entry| entry.bytes).sum();
+        let file_count = collection
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, crate::api::schema::FilePutEntryKind::File))
+            .count();
+        let directory_count = collection.entries.len() - file_count;
         self.overlay = Some(ClientShellOverlay::FileUpload(ClientFileUploadOverlay {
             entries: collection.entries,
             skipped: collection.skipped,
@@ -78,6 +89,8 @@ impl ClientShellState {
                 .unwrap_or_default(),
             pane_id: self.focused_pane_id(),
             total_bytes,
+            file_count,
+            directory_count,
             sent_bytes: 0,
             transfer_id: None,
             transfer_bytes: 0,

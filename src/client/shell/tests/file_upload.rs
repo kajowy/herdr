@@ -497,6 +497,27 @@ fn the_overlay_shows_the_manifest_then_progress() {
 }
 
 #[test]
+fn the_manifest_counts_are_computed_once_and_not_recounted_per_frame() {
+    // Every chunk response repaints this overlay, so the render path must not walk `entries`.
+    // Appending an entry after the counts were taken proves the render reads the stored counts:
+    // if it recounted, the manifest would follow the appended entry.
+    let path = scratch_file("counts", &[0u8; 8]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_mut() else {
+        panic!("expected the upload overlay");
+    };
+    assert_eq!((upload.file_count, upload.directory_count), (1, 0));
+    let extra = upload.entries[0].clone();
+    upload.entries.push(extra);
+
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("1 file(s)"),
+        "the manifest must use the counts taken at open:\n{frame}"
+    );
+}
+
+#[test]
 fn esc_cancels_and_tab_toggles_the_destination() {
     let path = scratch_file("keys", &[0u8; 4]);
     let (mut state, _boot_id) = shell_with_selection(&path);
