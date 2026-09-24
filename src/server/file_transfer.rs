@@ -22,14 +22,11 @@ use sha2::{Digest as _, Sha256};
 
 pub(crate) mod destination;
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 const TEMP_SUFFIX: &str = ".herdr-part";
-#[allow(dead_code)] // wired to the upload request handler in a later task
 const STALE_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Bound on retrying a collided no-replace placement with a freshly generated name. Each retry
 /// calls `unique_target`, which itself scans up to 1000 numbered variants, so this only bounds
 /// how many times a genuine concurrent-creation race can make us start that scan over.
-#[allow(dead_code)] // wired to the upload request handler in a later task
 const MAX_COMMIT_COLLISION_RETRIES: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,13 +43,11 @@ impl TransferError {
         }
     }
 
-    #[allow(dead_code)] // wired to the upload request handler in a later task
     pub(crate) fn from_io(code: &'static str, err: &io::Error) -> Self {
         Self::new(code, err.to_string())
     }
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) struct FileTransferConfig {
     pub(crate) inbox: PathBuf,
     pub(crate) max_file_bytes: u64,
@@ -61,7 +56,6 @@ pub(crate) struct FileTransferConfig {
 }
 
 /// One entry a `file.put.begin` asks for. Grouping the wire fields keeps `begin` readable.
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) struct BeginEntry<'a> {
     pub(crate) suggested_name: &'a str,
     pub(crate) relative_path: Option<&'a str>,
@@ -70,7 +64,6 @@ pub(crate) struct BeginEntry<'a> {
     pub(crate) sha256: &'a str,
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 struct ActiveTransfer {
     transfer_id: String,
     temp_path: PathBuf,
@@ -86,7 +79,6 @@ struct ActiveTransfer {
     hasher: Sha256,
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) struct FileTransferRegistry {
     config: FileTransferConfig,
     active: HashMap<u64, ActiveTransfer>,
@@ -100,7 +92,6 @@ pub(crate) struct FileTransferRegistry {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) struct BeginAccepted {
     pub(crate) transfer_id: String,
     pub(crate) chunk_bytes: u32,
@@ -112,13 +103,11 @@ pub(crate) struct BeginAccepted {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) struct CommittedFile {
     pub(crate) path: PathBuf,
     pub(crate) bytes: u64,
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 impl FileTransferRegistry {
     pub(crate) fn new(config: FileTransferConfig) -> Self {
         Self {
@@ -383,7 +372,6 @@ impl FileTransferRegistry {
     }
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 fn not_found() -> TransferError {
     TransferError::new("transfer_not_found", "this transfer is no longer active")
 }
@@ -395,7 +383,6 @@ fn not_found() -> TransferError {
 /// `unique_target` for a fresh candidate and then performs the placement with a rename that
 /// fails closed (rather than silently replacing) when the candidate is taken, so the window
 /// only costs a retry rather than data loss.
-#[allow(dead_code)] // wired to the upload request handler in a later task
 fn place_committed_file(
     temp_path: &Path,
     dir: &Path,
@@ -417,7 +404,6 @@ fn place_committed_file(
 
 /// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
 /// when it already exists.
-#[allow(dead_code)] // called by place_committed_file, wired in a later task
 #[cfg(target_os = "linux")]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
@@ -446,7 +432,6 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
 /// when it already exists.
-#[allow(dead_code)] // called by place_committed_file, wired in a later task
 #[cfg(target_os = "macos")]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
@@ -470,14 +455,12 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 /// exactly one directory entry pointing at the data, matching a successful rename's outcome. A
 /// failure between the two steps can leave both entries; that residue is a correctness gap this
 /// fork accepts on platforms outside its Linux/macOS CI, in exchange for never clobbering.
-#[allow(dead_code)] // called by place_committed_file, wired in a later task
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     fs::hard_link(from, to)?;
     fs::remove_file(from)
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 fn create_private_new(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -485,7 +468,6 @@ fn create_private_new(path: &Path) -> io::Result<fs::File> {
     options.open(path)
 }
 
-#[allow(dead_code)] // called by create_private_new, wired in a later task
 #[cfg(unix)]
 fn restrict_file_options(options: &mut fs::OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -494,11 +476,9 @@ fn restrict_file_options(options: &mut fs::OpenOptions) {
     options.custom_flags(libc::O_NOFOLLOW);
 }
 
-#[allow(dead_code)] // called by create_private_new, wired in a later task
 #[cfg(windows)]
 fn restrict_file_options(_options: &mut fs::OpenOptions) {}
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 fn reap_stale_temp_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;

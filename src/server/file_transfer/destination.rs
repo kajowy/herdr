@@ -38,7 +38,6 @@ fn canonicalize_prefix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn validate_root(root: &Path, home: &Path) -> Result<PathBuf, TransferError> {
     let refused = |reason: &str| {
         TransferError::new(
@@ -88,7 +87,6 @@ const CASE_INSENSITIVE_DENYLIST: bool = true;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const CASE_INSENSITIVE_DENYLIST: bool = false;
 
-#[allow(dead_code)] // used by validate_root, wired in a later task
 fn component_matches_name(component: std::path::Component, name: &str) -> bool {
     match component.as_os_str().to_str() {
         Some(text) if CASE_INSENSITIVE_DENYLIST => text.eq_ignore_ascii_case(name),
@@ -99,7 +97,6 @@ fn component_matches_name(component: std::path::Component, name: &str) -> bool {
 
 /// Whether `path` begins with `prefix`, matching components case-insensitively on filesystems
 /// that treat case as insignificant (see `CASE_INSENSITIVE_DENYLIST`).
-#[allow(dead_code)] // used by validate_root, wired in a later task
 fn starts_with_denylisted(path: &Path, prefix: &Path) -> bool {
     if !CASE_INSENSITIVE_DENYLIST {
         return path.starts_with(prefix);
@@ -118,7 +115,6 @@ fn starts_with_denylisted(path: &Path, prefix: &Path) -> bool {
     })
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn validate_component(component: &str) -> Result<(), TransferError> {
     let invalid = |reason: &str| {
         TransferError::new(
@@ -147,7 +143,6 @@ pub(crate) fn validate_component(component: &str) -> Result<(), TransferError> {
     Ok(())
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn resolve_relative_path(
     relative_path: Option<&str>,
     suggested_name: &str,
@@ -179,7 +174,6 @@ pub(crate) fn resolve_relative_path(
     Ok(components)
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn ensure_directory_no_follow(
     root: &Path,
     components: &[String],
@@ -198,7 +192,6 @@ pub(crate) fn ensure_directory_no_follow(
 /// Opening with `O_NOFOLLOW | O_DIRECTORY` closes that window by making the kernel refuse a
 /// symlinked or non-directory path atomically, so a hostile component is refused rather than
 /// followed.
-#[allow(dead_code)] // called by ensure_directory_no_follow, wired in a later task
 #[cfg(unix)]
 fn create_directory_no_follow(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -230,7 +223,6 @@ fn create_directory_no_follow(path: &Path) -> io::Result<()> {
 /// without extra reparse-point handling; rather than fall back to the disclosed-unsafe
 /// symlink_metadata-then-create pattern this refuses outright, so an unreviewed Windows path
 /// cannot silently ship with a weaker guarantee than unix.
-#[allow(dead_code)] // called by ensure_directory_no_follow, wired in a later task
 #[cfg(windows)]
 fn create_directory_no_follow(path: &Path) -> io::Result<()> {
     let _ = path;
@@ -240,7 +232,6 @@ fn create_directory_no_follow(path: &Path) -> io::Result<()> {
     ))
 }
 
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn unique_target(dir: &Path, file_name: &str) -> Result<PathBuf, TransferError> {
     let (stem, extension) = match file_name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, Some(extension)),
@@ -267,14 +258,12 @@ pub(crate) fn unique_target(dir: &Path, file_name: &str) -> Result<PathBuf, Tran
 
 /// A real directory already at `dir/name`, so a nested tree reuses it instead of getting a
 /// numbered sibling for every entry. A symlink is never reused.
-#[allow(dead_code)] // wired to the upload request handler in a later task
 pub(crate) fn existing_directory(dir: &Path, name: &str) -> Option<PathBuf> {
     let path = dir.join(name);
     let metadata = std::fs::symlink_metadata(&path).ok()?;
     (metadata.is_dir() && !metadata.file_type().is_symlink()).then_some(path)
 }
 
-#[allow(dead_code)] // called by create_directory_no_follow, wired in a later task
 #[cfg(unix)]
 fn restrict_dir_permissions(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -282,8 +271,12 @@ fn restrict_dir_permissions(dir: &Path) -> io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-#[allow(dead_code)] // called by create_directory_no_follow, wired in a later task
+// Genuinely unreachable on Windows: the Windows `create_directory_no_follow` above refuses
+// outright and never calls this, unlike its Unix counterpart. Kept only so the Unix
+// implementation's call site does not need its own `#[cfg(unix)]` on the call, and so a future
+// Windows directory-creation implementation has a matching permissions hook ready to wire in.
 #[cfg(windows)]
+#[allow(dead_code)]
 fn restrict_dir_permissions(_dir: &Path) -> io::Result<()> {
     Ok(())
 }

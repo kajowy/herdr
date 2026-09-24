@@ -1828,6 +1828,7 @@ impl HeadlessServer {
             if let Some(client) = self.clients.get_mut(&client_id) {
                 client.writer = None;
             }
+            self.file_transfers.abort_client(client_id);
             let _ = self.remove_client(client_id);
         }
         self.foreground_client_id = None;
