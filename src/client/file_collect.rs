@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
+/// Bound on how deep a picked directory is walked. `resolve_relative_path` refuses more than 32
+/// components anyway, so anything deeper could never be sent; the bound also stops a pathological
+/// tree from recursing without limit.
+const MAX_WALK_DEPTH: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CollectedEntry {
@@ -45,6 +49,10 @@ pub(crate) fn collect(selection: &[PathBuf]) -> Collection {
             continue;
         }
         if metadata.is_file() {
+            if leading_dot(entry.file_name().and_then(|name| name.to_str())) {
+                collection.skipped.push(hidden_note(entry));
+                continue;
+            }
             collection.entries.push(CollectedEntry {
                 path: entry.clone(),
                 relative_path: None,
@@ -60,8 +68,12 @@ pub(crate) fn collect(selection: &[PathBuf]) -> Collection {
                     .push(format!("{}: unsupported directory name", entry.display()));
                 continue;
             };
+            if leading_dot(Some(base)) {
+                collection.skipped.push(hidden_note(entry));
+                continue;
+            }
             collection.entries.push(directory_entry(base));
-            walk(entry, base, &mut collection);
+            walk(entry, base, 1, &mut collection);
             continue;
         }
         collection
@@ -80,7 +92,26 @@ fn directory_entry(relative: &str) -> CollectedEntry {
     }
 }
 
-fn walk(dir: &Path, prefix: &str, collection: &mut Collection) {
+/// Whether a name is one the server's component validator refuses for its leading dot.
+fn leading_dot(name: Option<&str>) -> bool {
+    name.is_some_and(|name| name.starts_with('.'))
+}
+
+/// The server refuses every leading-dot component (`destination::validate_component`), so a
+/// `.DS_Store` beside the picked files, or a `.git` inside a picked repository, is reported here
+/// rather than sent and refused one `begin` at a time.
+fn hidden_note(path: &Path) -> String {
+    format!("{}: hidden name, not sent", path.display())
+}
+
+fn walk(dir: &Path, prefix: &str, depth: usize, collection: &mut Collection) {
+    if depth > MAX_WALK_DEPTH {
+        collection.skipped.push(format!(
+            "{}: nested deeper than {MAX_WALK_DEPTH} directories",
+            dir.display()
+        ));
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         collection
             .skipped
@@ -95,6 +126,10 @@ fn walk(dir: &Path, prefix: &str, collection: &mut Collection) {
                 .push(format!("{}: unsupported name", path.display()));
             continue;
         };
+        if leading_dot(Some(&name)) {
+            collection.skipped.push(hidden_note(&path));
+            continue;
+        }
         let relative = format!("{prefix}/{name}");
         let Ok(metadata) = fs::symlink_metadata(&path) else {
             collection
@@ -111,7 +146,7 @@ fn walk(dir: &Path, prefix: &str, collection: &mut Collection) {
         if metadata.is_dir() {
             // Emit the directory before descending, so the server has it before its contents.
             collection.entries.push(directory_entry(&relative));
-            walk(&path, &relative, collection);
+            walk(&path, &relative, depth.saturating_add(1), collection);
             continue;
         }
         if !metadata.is_file() {
@@ -241,6 +276,62 @@ mod tests {
             .skipped
             .iter()
             .any(|entry| entry.contains("link.txt")));
+    }
+
+    #[test]
+    fn leading_dot_names_are_skipped_rather_than_sent() {
+        // Any Finder-browsed folder has `.DS_Store` and any repository has `.git/`. The server
+        // refuses every leading-dot component, so sending them would abort the selection partway.
+        let dir = scratch("hidden");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join(".git")).unwrap();
+        std::fs::write(tree.join(".git/config"), b"[core]").unwrap();
+        std::fs::write(tree.join(".DS_Store"), b"junk").unwrap();
+        std::fs::write(tree.join("keep.txt"), b"keep").unwrap();
+        let hidden_pick = dir.join(".hidden-pick");
+        std::fs::write(&hidden_pick, b"nope").unwrap();
+
+        let collection = collect(&[tree.clone(), hidden_pick]);
+        let listed: Vec<String> = collection
+            .entries
+            .iter()
+            .filter_map(|entry| entry.relative_path.clone())
+            .collect();
+        assert_eq!(listed, vec!["tree".to_owned(), "tree/keep.txt".to_owned()]);
+        for hidden in [".git", ".DS_Store", ".hidden-pick"] {
+            assert!(
+                collection
+                    .skipped
+                    .iter()
+                    .any(|entry| entry.contains(hidden)),
+                "{hidden} missing from {:?}",
+                collection.skipped
+            );
+        }
+    }
+
+    #[test]
+    fn a_tree_deeper_than_the_walk_bound_is_reported_and_not_descended() {
+        let dir = scratch("deep");
+        let mut deep = dir.join("tree");
+        for index in 0..(MAX_WALK_DEPTH + 2) {
+            deep = deep.join(format!("d{index}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("too-deep.txt"), b"x").unwrap();
+
+        let collection = collect(&[dir.join("tree")]);
+        assert!(
+            !collection
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("too-deep.txt")),
+            "the walk must stop at the depth bound"
+        );
+        assert!(collection
+            .skipped
+            .iter()
+            .any(|entry| entry.contains("nested deeper than")));
     }
 
     #[test]
