@@ -723,11 +723,24 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     })
 }
 
+/// Printed by [`CHOOSER_JXA`] in place of any paths when the user dismisses the panel.
+///
+/// A cancel is recognized from this exact line, never inferred from exit status or stderr text:
+/// `runModal`'s failure mode on cancel is not itself a distinguishing signal (it also fires on
+/// unrelated panel errors), so the script reports its own outcome directly instead of leaving
+/// the caller to guess from the process's exit shape. Distinct from any filesystem path (it
+/// contains no `/`), so a bug that ever let it fall through to `parse_chooser_output` would
+/// still just filter it out as a nonexistent path rather than being sent as a selection.
+const CHOOSER_CANCELLED_SENTINEL: &str = "HERDR-CHOOSER-CANCELLED";
+
 /// JXA that drives a real `NSOpenPanel`, so the user can pick files *and* directories.
 ///
 /// AppleScript's `choose file` cannot return directories and `choose folder` cannot return
 /// files, so a single multi-select panel has to come from AppKit. The process is promoted to a
-/// regular app and activated first, otherwise the panel opens behind the terminal.
+/// regular app and activated first, otherwise the panel opens behind the terminal. The cancel
+/// branch reports [`CHOOSER_CANCELLED_SENTINEL`] as the script's own result rather than calling
+/// `NSApplication.terminate`, so a cancel always finishes as an ordinary successful `osascript`
+/// run instead of depending on `terminate`'s effect on the process's exit status.
 const CHOOSER_JXA: &str = r#"ObjC.import('AppKit');
 var app = $.NSApplication.sharedApplication;
 app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
@@ -739,15 +752,18 @@ panel.allowsMultipleSelection = true;
 panel.resolvesAliases = false;
 panel.message = 'Send to this machine';
 panel.prompt = 'Send';
+var result;
 if (panel.runModal !== $.NSModalResponseOK) {
-    $.NSApplication.sharedApplication.terminate(null);
+    result = 'HERDR-CHOOSER-CANCELLED';
+} else {
+    var urls = ObjC.unwrap(panel.URLs);
+    var lines = [];
+    for (var index = 0; index < urls.length; index++) {
+        lines.push(ObjC.unwrap(urls[index].path));
+    }
+    result = lines.join('\n');
 }
-var urls = ObjC.unwrap(panel.URLs);
-var lines = [];
-for (var index = 0; index < urls.length; index++) {
-    lines.push(ObjC.unwrap(urls[index].path));
-}
-lines.join('\n');
+result;
 "#;
 
 /// AppleScript fallback used only when the ObjC bridge is unavailable. Files only.
@@ -765,16 +781,34 @@ pub struct FileChooserSelection {
     pub files_only: bool,
 }
 
-/// Why a chooser run produced no paths.
+/// The result of asking the user to pick local files and directories.
 ///
-/// A cancel is only recognized from a positive signal (a clean exit with nothing selected, or a
-/// stderr marker that names cancellation). A `BridgeUnavailable` failure is only recognized when
-/// stderr positively names a missing ObjC/AppKit import or an unrecognized `osascript` language,
-/// since only those failures mean the JXA path could never have worked. Anything else — a
-/// non-zero exit with empty or unrecognized stderr — is `Ambiguous`: it must not be treated as a
-/// cancel (the run may have genuinely failed) and must not trigger the AppleScript fallback
-/// panel (the failure was not shown to be the bridge's fault), so it surfaces as a warning
-/// instead.
+/// A cancel and a failure are kept distinct on purpose: a cancel is an ordinary, silent outcome,
+/// while a failure is a real error the caller must surface instead of quietly discarding, per
+/// `Failed`'s doc below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileChooserOutcome {
+    /// The user picked at least one path.
+    Selected(Vec<PathBuf>, FileChooserSelection),
+    /// The user dismissed the panel without picking anything. Stays silent; this is not an
+    /// error.
+    Cancelled,
+    /// The chooser could not run, or failed for a reason that is not a cancel. The caller must
+    /// surface this to the user rather than treat it like a cancel, since it hides a real
+    /// problem (a broken ObjC bridge, an unexpected `osascript` failure, and so on).
+    Failed,
+}
+
+/// Why a chooser run produced no paths, once a cancel has already been ruled out by
+/// [`CHOOSER_CANCELLED_SENTINEL`] or (for the AppleScript fallback, which cannot print it) by a
+/// clean exit with nothing selected.
+///
+/// A `BridgeUnavailable` failure is only recognized when stderr positively names a missing
+/// ObjC/AppKit import or an unrecognized `osascript` language, since only those failures mean
+/// the JXA path could never have worked. Anything else — a non-zero exit with empty or
+/// unrecognized stderr — is `Ambiguous`: it must not be assumed to be a cancel (the run may have
+/// genuinely failed) and must not trigger the AppleScript fallback panel (the failure was not
+/// shown to be the bridge's fault), so it is surfaced to the user as an error instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChooserFailure {
     Cancelled,
@@ -785,21 +819,42 @@ enum ChooserFailure {
 /// Ask the user for local files and directories with the native panel.
 ///
 /// Blocks until the user answers, so callers must run this off any render or input loop.
-/// Returns `None` when the user cancelled, picked nothing, or the run failed for a reason that
-/// does not positively identify a missing ObjC bridge.
-pub fn choose_files_for_upload() -> Option<(Vec<PathBuf>, FileChooserSelection)> {
-    match run_chooser(&["-l", "JavaScript", "-e", CHOOSER_JXA]) {
-        Ok(paths) => Some((paths, FileChooserSelection { files_only: false })),
-        Err(ChooserFailure::Cancelled) => None,
+pub fn choose_files_for_upload() -> FileChooserOutcome {
+    resolve_chooser_outcome(
+        run_chooser(&["-l", "JavaScript", "-e", CHOOSER_JXA]),
+        || run_chooser(&["-e", CHOOSER_APPLESCRIPT]),
+    )
+}
+
+/// Turns the primary (JXA) run's result into the outcome the caller sees, calling `run_fallback`
+/// to attempt the AppleScript panel only when the primary run's failure positively identifies a
+/// missing bridge. Kept separate from [`choose_files_for_upload`] so the "no second panel on an
+/// ambiguous failure" behavior is directly testable: a test can assert `run_fallback` was never
+/// called by making it panic.
+fn resolve_chooser_outcome(
+    primary: Result<Vec<PathBuf>, ChooserFailure>,
+    run_fallback: impl FnOnce() -> Result<Vec<PathBuf>, ChooserFailure>,
+) -> FileChooserOutcome {
+    match primary {
+        Ok(paths) => {
+            FileChooserOutcome::Selected(paths, FileChooserSelection { files_only: false })
+        }
+        Err(ChooserFailure::Cancelled) => FileChooserOutcome::Cancelled,
         Err(ChooserFailure::Ambiguous) => {
             tracing::warn!(
                 "file chooser failed for an unrecognized reason; not retrying with the AppleScript fallback"
             );
-            None
+            FileChooserOutcome::Failed
         }
-        Err(ChooserFailure::BridgeUnavailable) => match run_chooser(&["-e", CHOOSER_APPLESCRIPT]) {
-            Ok(paths) => Some((paths, FileChooserSelection { files_only: true })),
-            Err(_) => None,
+        Err(ChooserFailure::BridgeUnavailable) => match run_fallback() {
+            Ok(paths) => {
+                FileChooserOutcome::Selected(paths, FileChooserSelection { files_only: true })
+            }
+            Err(ChooserFailure::Cancelled) => FileChooserOutcome::Cancelled,
+            Err(ChooserFailure::BridgeUnavailable | ChooserFailure::Ambiguous) => {
+                tracing::warn!("the AppleScript file chooser fallback also failed");
+                FileChooserOutcome::Failed
+            }
         },
     }
 }
@@ -807,7 +862,7 @@ pub fn choose_files_for_upload() -> Option<(Vec<PathBuf>, FileChooserSelection)>
 /// Runs one `osascript` chooser script to completion and classifies the result.
 ///
 /// `Ok` is only returned when at least one path was selected; an empty selection is always
-/// classified through [`classify_chooser_result`] instead, so callers never have to separately
+/// classified through [`classify_chooser_output`] instead, so callers never have to separately
 /// check for an empty `Ok`.
 fn run_chooser(args: &[&str]) -> Result<Vec<PathBuf>, ChooserFailure> {
     let output = Command::new("osascript")
@@ -815,22 +870,39 @@ fn run_chooser(args: &[&str]) -> Result<Vec<PathBuf>, ChooserFailure> {
         .stdin(Stdio::null())
         .output()
         .map_err(|_| ChooserFailure::BridgeUnavailable)?;
-    let paths = parse_chooser_output(&output.stdout);
+    classify_chooser_output(&output.stdout, output.status.success(), &output.stderr)
+}
+
+/// Pure classification of one `osascript` run's captured output, used both by [`run_chooser`]
+/// and directly by tests (no panel is ever launched to exercise this).
+fn classify_chooser_output(
+    stdout: &[u8],
+    exit_success: bool,
+    stderr: &[u8],
+) -> Result<Vec<PathBuf>, ChooserFailure> {
+    if is_cancelled_sentinel(stdout) {
+        return Err(ChooserFailure::Cancelled);
+    }
+    let paths = parse_chooser_output(stdout);
     if !paths.is_empty() {
         return Ok(paths);
     }
-    Err(classify_chooser_result(
-        output.status.success(),
-        &output.stderr,
-    ))
+    Err(classify_chooser_result(exit_success, stderr))
 }
 
-/// Pure decision for an empty selection: whether it was a cancel, a positively identified
-/// missing bridge, or an ambiguous failure that must not be assumed to be either.
+/// True when the script reported [`CHOOSER_CANCELLED_SENTINEL`] as its entire result. Only the
+/// JXA script prints this; the AppleScript fallback cannot, so it always falls through to
+/// [`classify_chooser_result`].
+fn is_cancelled_sentinel(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).trim() == CHOOSER_CANCELLED_SENTINEL
+}
+
+/// Pure decision for an empty selection that was not the sentinel cancel: whether it was still
+/// a plain cancel (a clean exit with nothing selected — the AppleScript fallback's normal
+/// non-cancel shape when the user picks nothing), a positively identified missing bridge, or an
+/// ambiguous failure that must not be assumed to be either.
 fn classify_chooser_result(exit_success: bool, stderr: &[u8]) -> ChooserFailure {
     if exit_success {
-        // A clean exit with nothing selected is exactly what a dismissed panel looks like,
-        // regardless of what (if anything) ran on stderr.
         return ChooserFailure::Cancelled;
     }
     classify_chooser_failure(stderr)
@@ -924,42 +996,97 @@ mod chooser_tests {
     }
 
     #[test]
-    fn a_clean_exit_with_nothing_selected_is_a_cancel() {
+    fn the_jxa_script_prints_the_exact_sentinel_the_classifier_recognizes() {
+        // Guards against the two literals drifting apart, since `CHOOSER_JXA` embeds the
+        // sentinel text directly rather than being built from `CHOOSER_CANCELLED_SENTINEL`.
+        assert!(CHOOSER_JXA.contains(CHOOSER_CANCELLED_SENTINEL));
+    }
+
+    #[test]
+    fn a_sentinel_cancel_is_recognized_before_any_path_parsing() {
         assert_eq!(
-            classify_chooser_result(true, b""),
-            ChooserFailure::Cancelled
+            classify_chooser_output(CHOOSER_CANCELLED_SENTINEL.as_bytes(), true, b""),
+            Err(ChooserFailure::Cancelled)
+        );
+        // A real run's stdout carries a trailing newline; the sentinel must still match trimmed.
+        let with_newline = format!("{CHOOSER_CANCELLED_SENTINEL}\n");
+        assert_eq!(
+            classify_chooser_output(with_newline.as_bytes(), true, b""),
+            Err(ChooserFailure::Cancelled)
+        );
+    }
+
+    #[test]
+    fn an_empty_selection_without_the_sentinel_is_still_a_cancel_on_a_clean_exit() {
+        // The AppleScript fallback cannot print the sentinel, so a clean exit with nothing
+        // selected must still resolve to a cancel through the generic path.
+        assert_eq!(
+            classify_chooser_output(b"", true, b""),
+            Err(ChooserFailure::Cancelled)
         );
     }
 
     #[test]
     fn a_silent_failure_is_ambiguous_not_a_cancel_or_a_bridge_error() {
         assert_eq!(
-            classify_chooser_result(false, b""),
-            ChooserFailure::Ambiguous
+            classify_chooser_output(b"", false, b""),
+            Err(ChooserFailure::Ambiguous)
         );
     }
 
     #[test]
     fn a_positively_identified_cancel_marker_is_recognized_despite_the_nonzero_exit() {
         assert_eq!(
-            classify_chooser_result(false, b"execution error: User canceled. (-128)"),
-            ChooserFailure::Cancelled
+            classify_chooser_output(b"", false, b"execution error: User canceled. (-128)"),
+            Err(ChooserFailure::Cancelled)
         );
     }
 
     #[test]
     fn a_genuine_bridge_error_is_distinguished_from_a_cancel_or_an_ambiguous_failure() {
         assert_eq!(
-            classify_chooser_result(false, b"execution error: Can't get AppKit. (-1728)"),
-            ChooserFailure::BridgeUnavailable
+            classify_chooser_output(b"", false, b"execution error: Can't get AppKit. (-1728)"),
+            Err(ChooserFailure::BridgeUnavailable)
         );
     }
 
     #[test]
     fn an_unrecognized_nonempty_stderr_is_ambiguous_not_assumed_to_be_a_bridge_error() {
         assert_eq!(
-            classify_chooser_result(false, b"execution error: something else went wrong"),
-            ChooserFailure::Ambiguous
+            classify_chooser_output(b"", false, b"execution error: something else went wrong"),
+            Err(ChooserFailure::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_failure_reaches_the_error_path_without_a_second_panel() {
+        // `resolve_chooser_outcome` must turn an ambiguous primary failure into `Failed`, never
+        // into `Cancelled`, and must not call `run_fallback` (a second panel) to get there.
+        let outcome = resolve_chooser_outcome(Err(ChooserFailure::Ambiguous), || {
+            panic!("must not retry with the AppleScript fallback on an ambiguous failure")
+        });
+        assert_eq!(outcome, FileChooserOutcome::Failed);
+    }
+
+    #[test]
+    fn a_cancel_stays_silent_instead_of_reaching_the_error_path() {
+        let outcome = resolve_chooser_outcome(Err(ChooserFailure::Cancelled), || {
+            panic!("must not retry with the AppleScript fallback on a cancel")
+        });
+        assert_eq!(outcome, FileChooserOutcome::Cancelled);
+    }
+
+    #[test]
+    fn a_bridge_failure_does_retry_with_the_fallback() {
+        let outcome = resolve_chooser_outcome(Err(ChooserFailure::BridgeUnavailable), || {
+            Ok(vec![PathBuf::from("/tmp/picked.txt")])
+        });
+        assert_eq!(
+            outcome,
+            FileChooserOutcome::Selected(
+                vec![PathBuf::from("/tmp/picked.txt")],
+                FileChooserSelection { files_only: true }
+            )
         );
     }
 }

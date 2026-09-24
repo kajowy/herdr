@@ -60,17 +60,21 @@ pub(super) fn dispatch_client_shell_actions(
                 std::thread::Builder::new()
                     .name("herdr-file-chooser".into())
                     .spawn(move || {
-                        let (paths, selection) = crate::platform::choose_files_for_upload()
-                            .unwrap_or_else(|| {
-                                (
-                                    Vec::new(),
-                                    crate::platform::FileChooserSelection { files_only: false },
-                                )
-                            });
-                        let _ = tx.blocking_send(ClientLoopEvent::FileChooserResult {
-                            paths,
-                            files_only: selection.files_only,
-                        });
+                        // A cancel is a normal, silent outcome and sends no event at all; only a
+                        // selection or a genuine failure needs to reach the client loop.
+                        let event = match crate::platform::choose_files_for_upload() {
+                            crate::platform::FileChooserOutcome::Selected(paths, selection) => {
+                                ClientLoopEvent::FileChooserResult {
+                                    paths,
+                                    files_only: selection.files_only,
+                                }
+                            }
+                            crate::platform::FileChooserOutcome::Cancelled => return,
+                            crate::platform::FileChooserOutcome::Failed => {
+                                ClientLoopEvent::FileChooserFailed
+                            }
+                        };
+                        let _ = tx.blocking_send(event);
                     })
                     .map(|_| ())
                     .unwrap_or_else(|err| warn!(err = %err, "could not start the file chooser"));

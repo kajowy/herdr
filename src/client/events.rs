@@ -31,9 +31,15 @@ pub(super) enum ClientLoopEvent {
         force: bool,
     },
     Timer,
+    /// A file chooser selection. Only sent for a real selection: `paths` is always non-empty,
+    /// since a cancel sends no event at all and a failure sends `FileChooserFailed` instead.
     FileChooserResult {
         paths: Vec<std::path::PathBuf>,
         /// True when the AppleScript fallback ran, so directories were not offered.
         files_only: bool,
     },
+    /// The file chooser could not run, or failed for a reason that was not a cancel. Distinct
+    /// from a cancel (which sends no event) so the failure can be surfaced to the user instead
+    /// of being silently indistinguishable from "nothing was selected".
+    FileChooserFailed,
 }
