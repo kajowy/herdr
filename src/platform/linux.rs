@@ -848,6 +848,9 @@ pub struct FileChooserSelection {
     pub files_only: bool,
 }
 
+// `Selected` and `Failed` are never constructed here because this platform has no native chooser,
+// but the shared client code matches on the whole enum, so the shape stays identical across targets.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileChooserOutcome {
     Selected(Vec<std::path::PathBuf>, FileChooserSelection),
