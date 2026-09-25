@@ -70,6 +70,7 @@ pub fn run_server() -> io::Result<()> {
         // Create the headless server.
         let mut server = match HeadlessServer::new(
             app,
+            &loaded_config.config,
             &loaded_config.diagnostics,
             Some(api_tx.clone()),
             Some(_api_server),
@@ -181,6 +182,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         )?;
         let mut server = HeadlessServer::new(
             app,
+            &loaded_config.config,
             &loaded_config.diagnostics,
             Some(api_tx.clone()),
             Some(api_server),

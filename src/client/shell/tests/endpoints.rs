@@ -131,6 +131,7 @@ fn workspace_navigation_waits_for_the_target_presentation_fence() {
                 if target.workspace_id == expected)));
         let mut commands = EndpointCommands::default();
         let mut scheduled = None;
+        let (file_chooser_tx, _file_chooser_rx) = tokio::sync::mpsc::channel(1);
         crate::client::shell_runtime::dispatch_client_shell_actions(
             outcome.actions,
             &mut commands,
@@ -138,6 +139,7 @@ fn workspace_navigation_waits_for_the_target_presentation_fence() {
             Some(&mut state),
             &mut Vec::new(),
             &mut scheduled,
+            &file_chooser_tx,
         )
         .unwrap();
         if !surface_active {

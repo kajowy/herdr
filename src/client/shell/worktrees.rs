@@ -539,7 +539,11 @@ impl ClientShellState {
                 | PendingEndpointKind::PaneLinkActivate { .. }
                 | PendingEndpointKind::PaneLinkResolve { .. }
                 | PendingEndpointKind::CopyMotion { .. }
-                | PendingEndpointKind::CopySearch { .. },
+                | PendingEndpointKind::CopySearch { .. }
+                | PendingEndpointKind::FilePutBegin
+                | PendingEndpointKind::FilePutChunk
+                | PendingEndpointKind::FilePutCommit
+                | PendingEndpointKind::FilePutAbort,
                 Err(_),
             ) => true,
         }
