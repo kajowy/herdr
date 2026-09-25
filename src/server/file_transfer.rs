@@ -426,30 +426,53 @@ fn place_committed_file(
 
 /// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
 /// when it already exists.
+///
+/// This calls the `renameat2` syscall directly via `libc::syscall` rather than the `libc::renameat2`
+/// wrapper: the wrapper is only exposed for the linux-gnu target, not linux-musl, but the syscall
+/// itself is available on both. Falls back to the portable hard-link path on `ENOSYS`, which is
+/// possible on kernels older than 3.15 that lack `renameat2` entirely; that keeps placement
+/// fail-closed on every Linux kernel instead of only recent ones.
 #[cfg(target_os = "linux")]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt as _;
 
-    let from = CString::new(from.as_os_str().as_bytes())
+    let from_c = CString::new(from.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
-    let to = CString::new(to.as_os_str().as_bytes())
+    let to_c = CString::new(to.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a nul byte"))?;
-    // SAFETY: `from` and `to` are valid nul-terminated C strings for the duration of this call.
+    // SAFETY: `from_c` and `to_c` are valid nul-terminated C strings for the duration of this
+    // call. `syscall` returns -1 and sets `errno` on failure, which `io::Error::last_os_error`
+    // reads immediately after.
     let result = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
-            from.as_ptr(),
+            from_c.as_ptr(),
             libc::AT_FDCWD,
-            to.as_ptr(),
+            to_c.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
     };
     if result == 0 {
         Ok(())
     } else {
-        Err(io::Error::last_os_error())
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ENOSYS) {
+            rename_no_replace_fallback(from, to)
+        } else {
+            Err(err)
+        }
     }
+}
+
+/// Portable fallback used by the Linux path when the running kernel does not implement
+/// `renameat2` (`ENOSYS`). See the `not(any(linux, macos))` version below for the correctness
+/// trade-off this accepts.
+#[cfg(target_os = "linux")]
+fn rename_no_replace_fallback(from: &Path, to: &Path) -> io::Result<()> {
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
 }
 
 /// Rename `from` to `to`, failing with `io::ErrorKind::AlreadyExists` instead of replacing `to`
