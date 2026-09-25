@@ -498,6 +498,90 @@ fn the_overlay_shows_the_manifest_then_progress() {
 }
 
 #[test]
+fn the_overlay_advertises_the_tab_key_and_all_three_destinations_while_choosable() {
+    let path = scratch_file("hint", &[0u8; 4]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("tab destination"),
+        "the tab key to cycle destinations must be advertised on screen:\n{frame}"
+    );
+    assert!(
+        frame.contains("this pane's directory"),
+        "the pane-cwd choice must be visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("herdr-inbox"),
+        "the inbox choice must be visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("~/"),
+        "the typed-path choice must be visible:\n{frame}"
+    );
+}
+
+#[test]
+fn each_tab_press_reflects_the_new_destination_in_the_frame() {
+    let path = scratch_file("cycle-frame", &[0u8; 4]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("this pane's directory"),
+        "pane cwd must start selected:\n{frame}"
+    );
+
+    state.handle_input_bytes(b"\t");
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("herdr-inbox"),
+        "inbox must appear after one tab:\n{frame}"
+    );
+
+    state.handle_input_bytes(b"\t");
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("~/"),
+        "the typed-path destination must appear after the second tab:\n{frame}"
+    );
+    assert!(
+        frame.contains("path from ~") || frame.contains("required"),
+        "the empty typed-path field must render an explanatory placeholder:\n{frame}"
+    );
+}
+
+#[test]
+fn the_typed_path_field_shows_a_caret_and_the_typed_text_once_something_is_typed() {
+    let path = scratch_file("caret", &[0u8; 4]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+    state.handle_input_bytes(b"\t\t"); // pane cwd -> inbox -> home path
+
+    let frame = state.compose(106, 30).expect("shell frame");
+    assert!(
+        frame.cursor.as_ref().is_some_and(|cursor| cursor.visible),
+        "the typed-path field must show a caret while editing"
+    );
+    let text = frame_rows(&frame).join("\n");
+    // Empty: only the placeholder is visible, no typed text yet.
+    assert!(
+        text.contains("path from ~"),
+        "empty typed-path field must show its placeholder:\n{text}"
+    );
+
+    state.handle_input_bytes(b"projects/demo");
+    let frame = render_shell_frame(&mut state);
+    assert!(
+        frame.contains("projects/demo"),
+        "the typed text must render in the input field:\n{frame}"
+    );
+    assert!(
+        !frame.contains("path from ~"),
+        "the placeholder must not render once real text is typed:\n{frame}"
+    );
+}
+
+#[test]
 fn the_manifest_counts_are_computed_once_and_not_recounted_per_frame() {
     // Every chunk response repaints this overlay, so the render path must not walk `entries`.
     // Appending an entry after the counts were taken proves the render reads the stored counts:
