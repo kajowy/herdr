@@ -4,6 +4,7 @@ pub mod agents;
 pub mod commands;
 pub mod common;
 pub mod events;
+pub mod files;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
@@ -18,6 +19,7 @@ pub use agents::*;
 pub use commands::*;
 pub use common::*;
 pub use events::*;
+pub use files::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
@@ -65,6 +67,14 @@ pub enum Method {
     ReleaseNotesDismiss(ReleaseNotesDismissParams),
     #[serde(rename = "command.invoke")]
     CommandInvoke(CommandInvokeParams),
+    #[serde(rename = "file.put.begin")]
+    FilePutBegin(FilePutBeginParams),
+    #[serde(rename = "file.put.chunk")]
+    FilePutChunk(FilePutChunkParams),
+    #[serde(rename = "file.put.commit")]
+    FilePutCommit(FilePutCommitParams),
+    #[serde(rename = "file.put.abort")]
+    FilePutAbort(FilePutAbortParams),
     #[serde(rename = "client.window_title.set")]
     ClientWindowTitleSet(ClientWindowTitleSetParams),
     #[serde(rename = "client.window_title.clear")]

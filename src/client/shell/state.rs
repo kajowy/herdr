@@ -258,6 +258,18 @@ pub(crate) enum ClientShellAction {
     },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
+    ChooseFiles,
+    /// Paste one client-built, client-quoted string into a stable pane target.
+    ///
+    /// Carries its own endpoint and boot id for the same reason `Endpoint` does: pane ids are
+    /// per-server and per-boot, so dispatching to whatever endpoint happens to be active when
+    /// this action is drained could paste into an unrelated pane on another machine.
+    PastePane {
+        endpoint_id: ClientEndpointId,
+        boot_id: String,
+        pane_id: String,
+        text: String,
+    },
 }
 
 #[derive(Default)]
@@ -295,6 +307,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    FileUpload,
 }
 
 #[derive(Debug)]
@@ -595,6 +608,8 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    /// Constructed by `open_file_upload`, wired to the picker keybinding (prefix+u).
+    FileUpload(super::file_upload::ClientFileUploadOverlay),
 }
 
 impl ClientShellOverlay {
@@ -613,6 +628,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::FileUpload(_) => ClientShellOverlayKind::FileUpload,
         }
     }
 }
@@ -675,6 +691,10 @@ pub(super) enum PendingEndpointKind {
         generation: u64,
         session_generation: u64,
     },
+    FilePutBegin,
+    FilePutChunk,
+    FilePutCommit,
+    FilePutAbort,
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -941,6 +961,12 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+    /// Read by `open_file_upload`. Written by `cycle_file_upload_destination`, wired to the
+    /// overlay's `Tab` control.
+    pub(super) file_upload_destination: crate::api::schema::FilePutDestination,
+    /// The last path typed for `FilePutDestination::HomePath`, remembered for the rest of the
+    /// session so reopening the overlay does not lose it.
+    pub(super) file_upload_home_path: String,
 }
 
 pub(super) fn product_announcement_state(
@@ -1106,6 +1132,8 @@ impl ClientShellState {
             endpoint_error: None,
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
+            file_upload_destination: crate::api::schema::FilePutDestination::PaneCwd,
+            file_upload_home_path: String::new(),
         }
     }
 
@@ -1834,7 +1862,7 @@ impl ClientShellState {
     ///
     /// Every assignment must go through this setter so a repeated identical
     /// message gets a fresh deadline instead of inheriting the previous one.
-    pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
+    pub(crate) fn set_endpoint_error(&mut self, message: impl Into<String>) {
         self.endpoint_error = Some(message.into());
         self.endpoint_error_deadline = Some(
             std::time::Instant::now() + std::time::Duration::from_secs(ENDPOINT_ERROR_TIMEOUT_SECS),

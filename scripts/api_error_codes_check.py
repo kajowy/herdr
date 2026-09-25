@@ -50,6 +50,8 @@ API_SOURCES = (
     "src/app/",
     "src/server/headless.rs",
     "src/server/headless/notifications.rs",
+    "src/server/file_transfer.rs",
+    "src/server/file_transfer/",
 )
 
 # Files that build the same envelope shape but never answer a socket API

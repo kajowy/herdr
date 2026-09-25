@@ -78,6 +78,12 @@ pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 pub const DEFAULT_MOBILE_WIDTH_THRESHOLD: u16 = 64;
 pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
+/// Largest usable `server.file_chunk_bytes`. One `file.put.chunk` carries its payload base64
+/// encoded inside a JSON request line, and that line is capped at 1 MiB
+/// (`src/api/server.rs`), which leaves about this much room for file data. A larger configured
+/// value would not move more bytes per round trip, it would make every chunk exceed the cap and
+/// break every upload, so it is clamped rather than obeyed.
+pub const MAX_FILE_CHUNK_BYTES: u32 = 700_000;
 
 #[cfg(test)]
 pub(crate) fn app_dir_name() -> &'static str {
@@ -123,7 +129,24 @@ impl Config {
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())
+            .chain(self.clamped_file_chunk_bytes_diagnostic())
             .collect()
+    }
+
+    /// Bytes of file data one `file.put.chunk` is asked to carry, clamped to what a request line
+    /// can actually hold (see [`MAX_FILE_CHUNK_BYTES`]).
+    pub(crate) fn file_chunk_bytes(&self) -> u32 {
+        self.server.file_chunk_bytes.clamp(1, MAX_FILE_CHUNK_BYTES)
+    }
+
+    pub(crate) fn clamped_file_chunk_bytes_diagnostic(&self) -> Option<String> {
+        let configured = self.server.file_chunk_bytes;
+        (configured != self.file_chunk_bytes()).then(|| {
+            format!(
+                "server.file_chunk_bytes ({configured}) is outside 1..={MAX_FILE_CHUNK_BYTES}; using {}",
+                self.file_chunk_bytes()
+            )
+        })
     }
 
     pub(crate) fn headless_size(&self) -> (u16, u16) {

@@ -13,6 +13,9 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleMachines) => {
                 self.toggle_machines_section(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::SendFiles) => {
+                outcome.actions.push(ClientShellAction::ChooseFiles);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
@@ -630,6 +633,10 @@ impl ClientShellState {
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);
                 return (repaint, outcome.actions);
             }
+            PendingEndpointKind::FilePutBegin => return self.complete_file_put_begin(result),
+            PendingEndpointKind::FilePutChunk => return self.complete_file_put_chunk(result),
+            PendingEndpointKind::FilePutCommit => return self.complete_file_put_commit(result),
+            PendingEndpointKind::FilePutAbort => return (false, Vec::new()),
             PendingEndpointKind::SelectionCopy => {
                 return match result {
                     Ok(crate::api::schema::ResponseResult::PaneSelection { text, .. })

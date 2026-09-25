@@ -23,6 +23,12 @@ pub const SERVER_MESSAGE_PANE_SURFACE_PATCH: u32 = 19;
 const CLIENT_MESSAGE_CLIENT_SHELL_PANE_INPUT: u32 = 13;
 const CLIENT_MESSAGE_CLIENT_SHELL_FOCUS: u32 = 18;
 const CLIENT_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
+/// `ClientMessage::ClientShellEndpointRequest`'s bincode enum tag, pinned by the frozen wire-tag
+/// test in `src/protocol/wire.rs`.
+pub const CLIENT_MESSAGE_CLIENT_SHELL_ENDPOINT_REQUEST: u32 = 15;
+/// `ServerMessage::ClientShellEndpointResponseChunk`'s bincode enum tag, pinned by the frozen
+/// wire-tag test in `src/protocol/wire.rs`.
+pub const SERVER_MESSAGE_CLIENT_SHELL_ENDPOINT_RESPONSE_CHUNK: u32 = 18;
 
 pub fn register_spawned_herdr_pid(pid: Option<u32>) {
     let Some(pid) = pid else {
@@ -202,6 +208,18 @@ fn decode_string(payload: &[u8], offset: &mut usize) -> Result<String, String> {
     }
     let value = String::from_utf8(payload[*offset..*offset + len].to_vec())
         .map_err(|err| err.to_string())?;
+    *offset += len;
+    Ok(value)
+}
+
+fn decode_bytes(payload: &[u8], offset: &mut usize) -> Result<Vec<u8>, String> {
+    let (len, consumed) = decode_varint_u32(payload, *offset)?;
+    *offset += consumed;
+    let len = len as usize;
+    if *offset + len > payload.len() {
+        return Err("payload too short for byte content".into());
+    }
+    let value = payload[*offset..*offset + len].to_vec();
     *offset += len;
     Ok(value)
 }
@@ -494,6 +512,282 @@ pub fn wait_for_client_shell_bootstrap(
             "snapshot"
         }
     ))
+}
+
+/// Send a `file.put.*`/`client_shell.surface.set` request over the endpoint lane, framed as
+/// `ClientMessage::ClientShellEndpointRequest`.
+pub fn send_endpoint_request(
+    stream: &mut UnixStream,
+    boot_id: &str,
+    request: &serde_json::Value,
+) -> Result<(), String> {
+    let payload = encode_varint_enum(
+        CLIENT_MESSAGE_CLIENT_SHELL_ENDPOINT_REQUEST,
+        &[
+            &encode_string(boot_id),
+            &encode_string(&request.to_string()),
+        ],
+    );
+    stream
+        .write_all(&frame_message(&payload))
+        .map_err(|e| format!("write endpoint request: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush endpoint request: {e}"))
+}
+
+/// Read `ServerMessage::ClientShellEndpointResponseChunk` frames until `final_chunk` is true,
+/// skipping any other message the server interleaves in, then parse the concatenated payload
+/// as JSON.
+pub fn read_endpoint_response(
+    stream: &mut UnixStream,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let read_timeout = Duration::from_millis(200);
+    if stream.read_timeout().map_err(|e| e.to_string())? != Some(read_timeout) {
+        stream
+            .set_read_timeout(Some(read_timeout))
+            .map_err(|e| e.to_string())?;
+    }
+    let deadline = Instant::now() + timeout;
+    let mut buffer = Vec::new();
+    while Instant::now() < deadline {
+        match read_server_message(stream) {
+            Ok((SERVER_MESSAGE_CLIENT_SHELL_ENDPOINT_RESPONSE_CHUNK, payload)) => {
+                let mut offset = 0;
+                decode_string(&payload, &mut offset)?; // boot_id
+                decode_string(&payload, &mut offset)?; // request_id
+                if offset >= payload.len() {
+                    return Err("payload too short for final_chunk flag".into());
+                }
+                let final_chunk = payload[offset] != 0;
+                offset += 1;
+                let data = decode_bytes(&payload, &mut offset)?;
+                buffer.extend_from_slice(&data);
+                if final_chunk {
+                    return serde_json::from_slice(&buffer).map_err(|e| e.to_string());
+                }
+            }
+            Ok(_) | Err(_) => continue,
+        }
+    }
+    Err("timed out waiting for endpoint response chunk".into())
+}
+
+/// Like `wait_for_client_shell_bootstrap`, but also returns the parsed `shell.snapshot.v1`
+/// payload so callers can read `boot_id` and `focused_pane_id` off it.
+fn wait_for_client_shell_snapshot(
+    stream: &mut UnixStream,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + timeout;
+    let mut snapshot: Option<serde_json::Value> = None;
+    while Instant::now() < deadline {
+        match read_server_message(stream) {
+            Ok((SERVER_MESSAGE_ENDPOINT_CONTROL, payload)) => {
+                let mut offset = 0;
+                if decode_string(&payload, &mut offset).as_deref() == Ok("shell.snapshot.v1") {
+                    let data = decode_string(&payload, &mut offset)?;
+                    snapshot = Some(serde_json::from_str(&data).map_err(|e| e.to_string())?);
+                }
+            }
+            Ok((SERVER_MESSAGE_PANE_SURFACE, _)) if snapshot.is_some() => {
+                return snapshot.ok_or_else(|| "missing snapshot".to_owned());
+            }
+            Ok((SERVER_MESSAGE_PANE_SURFACE, _)) => {
+                return Err("client shell pane surface arrived before its snapshot".into());
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    Err(format!(
+        "timed out waiting for client shell {}",
+        if snapshot.is_some() {
+            "pane surface"
+        } else {
+            "snapshot"
+        }
+    ))
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    format!("{:x}", Sha256::digest(data))
+}
+
+pub fn base64_standard(data: &[u8]) -> String {
+    use base64::Engine as _;
+
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// A running headless server configured with an isolated `[server] file_inbox`, for the
+/// `file.put.*` endpoint-lane integration tests. `file_chunk_bytes` is pinned small so the
+/// oversized-chunk error path is cheap to exercise; it stays well above every chunk these tests
+/// send in one piece.
+pub struct FileInboxHarness {
+    base: PathBuf,
+    inbox: PathBuf,
+    client_socket: PathBuf,
+    server: Option<SpawnedTestServer>,
+}
+
+impl FileInboxHarness {
+    pub fn inbox(&self) -> PathBuf {
+        self.inbox.clone()
+    }
+
+    /// The server process's own working directory, which is also the launch cwd of its default
+    /// pane (and the `HOME` this harness gave the server for destination confinement checks).
+    pub fn pane_cwd(&self) -> PathBuf {
+        self.base.clone()
+    }
+
+    pub fn connect_client_shell(&self) -> UnixStream {
+        wait_for_socket(&self.client_socket, Duration::from_secs(10));
+        UnixStream::connect(&self.client_socket).expect("connect to client shell socket")
+    }
+
+    /// Perform the client-shell handshake and wait for bootstrap, returning the server's
+    /// `boot_id` for use with `send_endpoint_request`.
+    pub fn boot_id(&self, stream: &mut UnixStream) -> String {
+        self.boot_id_and_focused_pane(stream).0
+    }
+
+    /// Same as `boot_id`, but also returns the id of the pane focused by default, for
+    /// `destination: "pane_cwd"` requests.
+    pub fn boot_id_and_focused_pane(&self, stream: &mut UnixStream) -> (String, String) {
+        client_shell_handshake(stream, CURRENT_ENDPOINT_PROTOCOL_GENERATION, 120, 40)
+            .expect("client shell handshake should succeed");
+        let snapshot = wait_for_client_shell_snapshot(stream, Duration::from_secs(10))
+            .expect("client shell bootstrap should deliver a snapshot");
+        let boot_id = snapshot["boot_id"]
+            .as_str()
+            .expect("snapshot should include a boot id")
+            .to_owned();
+        let pane_id = snapshot["focused_pane_id"]
+            .as_str()
+            .expect("snapshot should include a focused pane id")
+            .to_owned();
+        (boot_id, pane_id)
+    }
+}
+
+impl Drop for FileInboxHarness {
+    fn drop(&mut self) {
+        drop(self.server.take());
+        cleanup_test_base(&self.base);
+    }
+}
+
+struct SpawnedTestServer {
+    _master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+impl Drop for SpawnedTestServer {
+    fn drop(&mut self) {
+        let pid = self.child.process_id();
+        let _ = self.child.kill();
+        drop(self._master.take());
+        if let Some(pid) = pid {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                let mut status = 0;
+                let result =
+                    unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+                if result == pid as libc::pid_t || result == -1 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            unregister_spawned_herdr_pid(Some(pid));
+        }
+    }
+}
+
+fn client_shell_app_dir_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        "herdr-dev"
+    } else {
+        "herdr"
+    }
+}
+
+pub fn spawn_server_with_file_inbox() -> FileInboxHarness {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // A literal `/tmp` prefix, not `std::env::temp_dir()`: on macOS the latter resolves to a long
+    // per-user `$TMPDIR` path (`/var/folders/...`) that overflows `sockaddr_un`'s `sun_path`.
+    let base = PathBuf::from(format!(
+        "/tmp/herdr-file-upload-test-{}-{nanos}",
+        std::process::id()
+    ));
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let inbox = base.join("inbox");
+
+    fs::create_dir_all(config_home.join(client_shell_app_dir_name())).unwrap();
+    fs::create_dir_all(&runtime_dir).unwrap();
+    fs::create_dir_all(&base).unwrap();
+    register_runtime_dir(&runtime_dir);
+    fs::write(
+        config_home
+            .join(client_shell_app_dir_name())
+            .join("config.toml"),
+        format!(
+            "onboarding = false\n[server]\nfile_inbox = {:?}\nfile_chunk_bytes = 64\n",
+            inbox.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open pty for test server");
+
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    cmd.arg("server");
+    cmd.cwd(&base);
+    cmd.env("HOME", &base);
+    cmd.env("XDG_CONFIG_HOME", &config_home);
+    cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
+    cmd.env("HERDR_SOCKET_PATH", &api_socket);
+    cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
+    cmd.env("SHELL", "/bin/sh");
+    cmd.env_remove("HERDR_ENV");
+
+    let child = pair.slave.spawn_command(cmd).expect("spawn test server");
+    register_spawned_herdr_pid(child.process_id());
+    drop(pair.slave);
+
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+
+    FileInboxHarness {
+        base,
+        inbox,
+        client_socket,
+        server: Some(SpawnedTestServer {
+            _master: Some(pair.master),
+            child,
+        }),
+    }
 }
 
 pub fn wait_for_disconnect(stream: &mut UnixStream, timeout: Duration) -> Result<bool, String> {

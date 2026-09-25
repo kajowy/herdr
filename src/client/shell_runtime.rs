@@ -7,6 +7,7 @@ pub(super) fn dispatch_client_shell_actions(
     mut shell: Option<&mut shell::ClientShellState>,
     detached_process_children: &mut Vec<std::process::Child>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
@@ -27,6 +28,31 @@ pub(super) fn dispatch_client_shell_actions(
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 crate::selection::write_osc52_bytes(&bytes);
+            }
+            shell::ClientShellAction::PastePane {
+                endpoint_id,
+                boot_id,
+                pane_id,
+                text,
+            } => {
+                // Pane ids are per-server and per-boot. Deliver only to the endpoint and boot the
+                // transfer committed against, never to whatever endpoint is active by now.
+                let still_that_boot = shell
+                    .as_deref()
+                    .and_then(|shell| shell.endpoint_boot_id(&endpoint_id))
+                    == Some(boot_id.as_str());
+                if !still_that_boot {
+                    warn!("not pasting the uploaded path: that server is no longer the one that received it");
+                    continue;
+                }
+                let message = ClientMessage::ClientShellPaneInput {
+                    pane_id,
+                    events: vec![crate::protocol::ClientPaneInputEvent::Paste(text)],
+                };
+                if endpoints.send_to(&endpoint_id, &message) != endpoint::EndpointSendOutcome::Sent
+                {
+                    warn!("could not deliver the uploaded path to the pane");
+                }
             }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
@@ -53,6 +79,31 @@ pub(super) fn dispatch_client_shell_actions(
                     ?action,
                     "client shell action awaits its presentation family"
                 );
+            }
+            shell::ClientShellAction::ChooseFiles => {
+                let tx = file_chooser_tx.clone();
+                std::thread::Builder::new()
+                    .name("herdr-file-chooser".into())
+                    .spawn(move || {
+                        // A cancel is a normal, silent outcome and sends no event at all; only a
+                        // selection or a genuine failure needs to reach the client loop.
+                        let event = match crate::platform::choose_files_for_upload() {
+                            crate::platform::FileChooserOutcome::Selected(paths, selection) => {
+                                // Walk the selection here, off the client loop.
+                                ClientLoopEvent::FileChooserResult {
+                                    collection: crate::client::file_collect::collect(&paths),
+                                    files_only: selection.files_only,
+                                }
+                            }
+                            crate::platform::FileChooserOutcome::Cancelled => return,
+                            crate::platform::FileChooserOutcome::Failed => {
+                                ClientLoopEvent::FileChooserFailed
+                            }
+                        };
+                        let _ = tx.blocking_send(event);
+                    })
+                    .map(|_| ())
+                    .unwrap_or_else(|err| warn!(err = %err, "could not start the file chooser"));
             }
         }
     }
@@ -215,6 +266,7 @@ pub(super) fn begin_endpoint_activation(
     force: bool,
     now: std::time::Instant,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(), ClientError> {
     state.deferred_local_activation = None;
     if endpoint_id.is_local() && !local_activation_metadata_ready(state, endpoints) {
@@ -268,6 +320,7 @@ pub(super) fn begin_endpoint_activation(
                 Some(shell),
                 &mut state.detached_process_children,
                 scheduled_activation,
+                file_chooser_tx,
             )?;
             if repaint {
                 if let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1) {
@@ -686,6 +739,7 @@ pub(super) fn finish_client_shell_input(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
     apply_client_shell_input_source_changes(state, prefix_input_source);
     if outcome.detach {
@@ -725,6 +779,7 @@ pub(super) fn finish_client_shell_input(
         state.shell.as_mut(),
         &mut state.detached_process_children,
         scheduled_activation,
+        file_chooser_tx,
     )?;
     let frame = if dispatch_repaint {
         state

@@ -15,6 +15,10 @@ const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 const CLIENT_SHELL_METHODS: &[&str] = &[
     "client_shell.surface.set",
     "command.invoke",
+    "file.put.abort",
+    "file.put.begin",
+    "file.put.chunk",
+    "file.put.commit",
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
@@ -298,6 +302,33 @@ mod tests {
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
 
+        const FILE_PUT_V1_SHAPE_DIGESTS: &[(&str, &str)] = &[
+            (
+                "file.put.abort",
+                "134fd0a2738e2ed0d2b292347edcd77913afc9843242fd4c042ca67c65a54922",
+            ),
+            (
+                "file.put.begin",
+                "2cd3146887e237526177e577cac19922904945ef0c52b1e5e20f794d75fea639",
+            ),
+            (
+                "file.put.chunk",
+                "ae779eced82a0a2902142564f20137a1fc374d0ad34c72929054eeb4caf17eda",
+            ),
+            (
+                "file.put.commit",
+                "3b21a1966f1d4700e602039ef9ac7ba219b65450d23d9a377ff487e06f7e2aac",
+            ),
+        ];
+
+        for (method, digest) in FILE_PUT_V1_SHAPE_DIGESTS {
+            assert_eq!(
+                actual.remove(*method).as_deref(),
+                Some(*digest),
+                "{method} changed shape"
+            );
+        }
+
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
@@ -343,6 +374,22 @@ mod tests {
                 "advertised endpoint method {method:?} is absent from the request schema"
             );
         }
+    }
+
+    #[test]
+    fn file_put_methods_are_on_the_client_shell_lane() {
+        for method in [
+            "file.put.abort",
+            "file.put.begin",
+            "file.put.chunk",
+            "file.put.commit",
+        ] {
+            assert!(
+                supports_client_shell_method_name(method),
+                "{method} is not advertised on the client shell lane"
+            );
+        }
+        assert!(!supports_client_shell_method_name("file.get.begin"));
     }
 
     #[test]

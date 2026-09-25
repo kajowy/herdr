@@ -2360,6 +2360,27 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChooserSelection {
+    pub files_only: bool,
+}
+
+// `Selected` and `Failed` are never constructed here because this platform has no native chooser,
+// but the shared client code matches on the whole enum, so the shape stays identical across targets.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileChooserOutcome {
+    Selected(Vec<std::path::PathBuf>, FileChooserSelection),
+    Cancelled,
+    Failed,
+}
+
+/// Unsupported platform stub; no native file chooser exists here yet, so this always reports a
+/// silent cancel rather than a failure the user did not ask for.
+pub fn choose_files_for_upload() -> FileChooserOutcome {
+    FileChooserOutcome::Cancelled
+}
+
 fn read_registered_png_clipboard() -> Option<Vec<u8>> {
     static PNG_FORMAT: LazyLock<u32> = LazyLock::new(|| {
         let name = wide_null("PNG");

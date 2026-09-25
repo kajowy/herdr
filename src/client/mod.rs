@@ -23,6 +23,7 @@ pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
 mod events;
+mod file_collect;
 mod frame_output;
 mod handshake;
 mod input;
@@ -757,6 +758,59 @@ async fn run_client_loop(
 
         match event {
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::FileChooserResult {
+                collection,
+                files_only,
+            } => {
+                if let Some(shell) = state.shell.as_mut() {
+                    let mut outcome = shell::ClientShellInput::default();
+                    if files_only {
+                        shell.set_endpoint_error(
+                            "This Mac could not open the native panel, so only files could be picked.",
+                        );
+                        outcome.repaint = true;
+                    }
+                    shell.open_file_upload(collection, &mut outcome);
+                    let frame = outcome
+                        .repaint
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten();
+                    if finish_client_shell_input(
+                        &mut state,
+                        outcome,
+                        frame,
+                        &mut write_stream,
+                        &mut pending_activation,
+                        &mut endpoint_commands,
+                        &mut prefix_input_source,
+                        &mut scheduled_activation,
+                        &event_tx,
+                    )? {
+                        return Ok(());
+                    }
+                }
+            }
+            ClientLoopEvent::FileChooserFailed => {
+                if let Some(shell) = state.shell.as_mut() {
+                    let mut outcome = shell::ClientShellInput::default();
+                    shell.set_endpoint_error("Could not open the file chooser.");
+                    outcome.repaint = true;
+                    let frame = shell.compose(state.reported_size.0, state.reported_size.1);
+                    if finish_client_shell_input(
+                        &mut state,
+                        outcome,
+                        frame,
+                        &mut write_stream,
+                        &mut pending_activation,
+                        &mut endpoint_commands,
+                        &mut prefix_input_source,
+                        &mut scheduled_activation,
+                        &event_tx,
+                    )? {
+                        return Ok(());
+                    }
+                }
+            }
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let image_bridge_active = endpoint_accepts_local_images(
@@ -832,6 +886,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        &event_tx,
                     )? {
                         return Ok(());
                     }
@@ -996,6 +1051,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        &event_tx,
                     )? {
                         return Ok(());
                     }
@@ -1100,6 +1156,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        &event_tx,
                     )? {
                         return Ok(());
                     }
@@ -1276,6 +1333,7 @@ async fn run_client_loop(
                     force,
                     now,
                     &mut scheduled_activation,
+                    &event_tx,
                 )?;
             }
             ClientLoopEvent::ServerMessage {
@@ -1757,6 +1815,7 @@ async fn run_client_loop(
                             state.shell.as_mut(),
                             &mut state.detached_process_children,
                             &mut scheduled_activation,
+                            &event_tx,
                         )?;
                         let repaint = repaint || dispatch_repaint;
                         if replay_mouse.is_empty() {
@@ -1789,6 +1848,7 @@ async fn run_client_loop(
                                 &mut endpoint_commands,
                                 &mut prefix_input_source,
                                 &mut scheduled_activation,
+                                &event_tx,
                             )? {
                                 return Ok(());
                             }
@@ -2143,6 +2203,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        &event_tx,
                     )? {
                         return Ok(());
                     }

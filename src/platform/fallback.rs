@@ -248,6 +248,24 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChooserSelection {
+    pub files_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileChooserOutcome {
+    Selected(Vec<std::path::PathBuf>, FileChooserSelection),
+    Cancelled,
+    Failed,
+}
+
+/// Unsupported platform stub; no native file chooser exists here yet, so this always reports a
+/// silent cancel rather than a failure the user did not ask for.
+pub fn choose_files_for_upload() -> FileChooserOutcome {
+    FileChooserOutcome::Cancelled
+}
+
 /// Unsupported platform stub.
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)

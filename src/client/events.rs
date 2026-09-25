@@ -31,4 +31,20 @@ pub(super) enum ClientLoopEvent {
         force: bool,
     },
     Timer,
+    /// A file chooser selection, already walked into upload entries. Only sent for a real
+    /// selection, since a cancel sends no event at all and a failure sends `FileChooserFailed`
+    /// instead.
+    ///
+    /// The walk happens on the chooser thread, not here: it is recursive filesystem work whose
+    /// cost follows the size of the selection, and the client loop it would otherwise run on also
+    /// drives input and render.
+    FileChooserResult {
+        collection: crate::client::file_collect::Collection,
+        /// True when the AppleScript fallback ran, so directories were not offered.
+        files_only: bool,
+    },
+    /// The file chooser could not run, or failed for a reason that was not a cancel. Distinct
+    /// from a cancel (which sends no event) so the failure can be surfaced to the user instead
+    /// of being silently indistinguishable from "nothing was selected".
+    FileChooserFailed,
 }

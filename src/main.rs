@@ -191,6 +191,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
 # toggle_machines = "prefix+m"
+# send_files = "prefix+u"
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
 # They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.
@@ -226,6 +227,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 [server]
 # headless_cols = 120
 # headless_rows = 40
+# file_inbox = "~/herdr-inbox"
+# file_max_bytes = 2000000000
+# file_total_max_bytes = 20000000000
+# file_chunk_bytes = 700000  # clamped to 700000: a chunk must fit a 1 MiB request line
 
 # [worktrees]
 # directory = "~/.herdr/worktrees"

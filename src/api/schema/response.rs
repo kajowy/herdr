@@ -79,6 +79,24 @@ pub enum ResponseResult {
         worktree: WorktreeInfo,
         already_open: bool,
     },
+    FilePutBegan {
+        transfer_id: String,
+        chunk_bytes: u32,
+        destination_label: String,
+        /// True when the entry needed no bytes, so no chunk or commit follows.
+        complete: bool,
+        /// Final path of a completed entry; empty while a file transfer is still open.
+        path: String,
+    },
+    FilePutChunkAccepted {
+        transfer_id: String,
+        next_offset: u64,
+    },
+    FilePutCommitted {
+        transfer_id: String,
+        path: String,
+        bytes: u64,
+    },
     WorktreeRemoved {
         workspace_id: String,
         path: String,

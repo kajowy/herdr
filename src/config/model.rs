@@ -467,6 +467,8 @@ pub struct KeysConfig {
     pub toggle_sidebar: BindingConfig,
     /// Fold the sidebar machines section to its header. Default: "prefix+m"
     pub toggle_machines: BindingConfig,
+    /// Send local files to the focused pane's machine. Default: "prefix+u"
+    pub send_files: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -601,6 +603,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_machines: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    send_files: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
     command: Option<Vec<CommandKeybindConfig>>,
@@ -690,6 +694,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(toggle_machines);
+        apply_field!(send_files);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -796,6 +801,7 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(toggle_machines, keybinds.toggle_machines);
+        copy_effective_action_field!(send_files, keybinds.send_files);
         copy_user_field!(indexed);
 
         profile
@@ -1033,6 +1039,15 @@ pub struct ServerConfig {
     pub headless_cols: u16,
     /// Virtual terminal height used when no client is attached. Default: 40.
     pub headless_rows: u16,
+    /// Directory that receives files sent to this machine. Default: "~/herdr-inbox"
+    pub file_inbox: String,
+    /// Largest single file accepted by one transfer, in bytes. Default: 2000000000.
+    pub file_max_bytes: u64,
+    /// Largest total accepted from one connection, in bytes. Default: 20000000000.
+    pub file_total_max_bytes: u64,
+    /// Bytes of file data the server asks each chunk to carry. Clamped to 700000, the most a
+    /// base64 chunk can carry inside the 1 MiB request line. Default: 700000.
+    pub file_chunk_bytes: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1168,6 +1183,7 @@ impl Default for KeysConfig {
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_machines: BindingConfig::one("prefix+m"),
+            send_files: BindingConfig::one("prefix+u"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),
@@ -1313,6 +1329,10 @@ impl Default for ServerConfig {
         Self {
             headless_cols: crate::config::DEFAULT_HEADLESS_COLS,
             headless_rows: crate::config::DEFAULT_HEADLESS_ROWS,
+            file_inbox: "~/herdr-inbox".to_owned(),
+            file_max_bytes: 2_000_000_000,
+            file_total_max_bytes: 20_000_000_000,
+            file_chunk_bytes: 700_000,
         }
     }
 }
@@ -2051,6 +2071,41 @@ headless_rows = 50
                 crate::config::DEFAULT_HEADLESS_ROWS
             )
         );
+    }
+
+    #[test]
+    fn an_unusable_file_chunk_size_is_clamped_with_a_diagnostic() {
+        let default_config = Config::default();
+        assert_eq!(
+            default_config.file_chunk_bytes(),
+            crate::config::MAX_FILE_CHUNK_BYTES
+        );
+        assert!(default_config
+            .clamped_file_chunk_bytes_diagnostic()
+            .is_none());
+
+        // Anything above the request-line budget would make every chunk exceed it, so the
+        // configured value is clamped rather than obeyed, and the user is told.
+        let oversized: Config = toml::from_str(
+            r#"[server]
+file_chunk_bytes = 4000000
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oversized.file_chunk_bytes(),
+            crate::config::MAX_FILE_CHUNK_BYTES
+        );
+        assert!(oversized.clamped_file_chunk_bytes_diagnostic().is_some());
+
+        let zero: Config = toml::from_str(
+            r#"[server]
+file_chunk_bytes = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(zero.file_chunk_bytes(), 1);
+        assert!(zero.clamped_file_chunk_bytes_diagnostic().is_some());
     }
 
     #[test]

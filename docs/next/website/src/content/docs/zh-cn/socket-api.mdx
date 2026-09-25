@@ -947,6 +947,21 @@ herdr agent wait w1:p1 --until blocked
 | `stale_release_notes` | The release notes being dismissed are no longer current. |
 | `ui_busy` | A popup pane is already open. |
 
+**File uploads**
+
+| Code | When it occurs |
+| --- | --- |
+| `destination_refused` | The resolved upload destination is outside the home directory, a denylisted system or config path, inside a `.git` directory, the target pane has no resolvable working directory, or a typed home-relative destination is empty. |
+| `invalid_file_path` | A relative path is absolute, nests too deeply, has an empty or otherwise disallowed component, a typed home-relative destination escapes the home directory or names a disallowed component, or the checksum is not a sha256 hex digest. |
+| `transfer_busy` | The connection already has a transfer in flight. |
+| `transfer_checksum_mismatch` | The assembled bytes do not match the announced sha256. |
+| `transfer_chunk_too_large` | A single chunk exceeds the configured chunk size. |
+| `transfer_name_collision` | Placement lost every retry to a concurrently created file of the same generated name. |
+| `transfer_not_found` | No active transfer matches this connection and transfer id. |
+| `transfer_offset_mismatch` | A chunk's offset does not match bytes written so far, or `commit` was called before all announced bytes arrived. |
+| `transfer_too_large` | A file, or a connection's running total, exceeds the configured size limit. |
+| `transfer_write_failed` | An I/O error occurred while creating, writing, or placing the file. |
+
 ## 协议稳定性
 
 由客户端渲染的 Herdr UI 对本地和 SSH 服务器使用稳定的端点代数。客户端和服务器构建不必一致。连接时，双方会协商核心快照、屏幕、输入和 blob 编解码器，服务器则公布支持的 API 方法和可选能力。已保存的 SSH 机器需要 `surface_interest` 来确保只有选中的机器传输窗格画面，并需要 `health_check` 来发现空闲连接的故障。缺少这些能力的服务器会显示 Attention，直到明确更新。详见[连接机器](/zh-cn/docs/connecting-machines/)。缺少方法时,只禁用该服务器上的对应操作并显示客户端本地通知;操作被拒绝或超时也不会断开连接。只有早于端点第 1 代的服务器需要最后更新一次。

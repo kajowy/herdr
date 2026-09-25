@@ -5,6 +5,7 @@ use crate::protocol::{
     PaneSurfaceSplit, PaneSurfaceSplitDirection, SurfaceRect,
 };
 use crossterm::event::MouseEvent;
+use endpoint_requests::request_id;
 mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
@@ -142,6 +143,13 @@ fn frame_rows(frame: &FrameData) -> Vec<String> {
         .collect()
 }
 
+/// Composes the shell at a fixed size and joins every row into one string, for tests that only
+/// need to assert on rendered overlay content rather than cell positions.
+pub(super) fn render_shell_frame(state: &mut ClientShellState) -> String {
+    let frame = state.compose(106, 30).expect("shell frame");
+    frame_rows(&frame).join("\n")
+}
+
 /// Absolute cell position of `needle` inside `area`, for style assertions.
 fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u16) {
     let rows = frame_rows(frame);
@@ -251,6 +259,7 @@ mod close_tab;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod file_upload;
 mod graphics;
 mod grouped_agents;
 #[path = "input.rs"]
