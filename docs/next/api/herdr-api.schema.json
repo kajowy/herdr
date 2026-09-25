@@ -2171,11 +2171,18 @@
             },
             "destination": {
               "$ref": "#/schemas/request/$defs/FilePutDestination",
-              "default": "inbox"
+              "default": "pane_cwd"
             },
             "entry_kind": {
               "$ref": "#/schemas/request/$defs/FilePutEntryKind",
               "default": "file"
+            },
+            "home_path": {
+              "description": "The path typed by the client for `FilePutDestination::HomePath`, relative to the\nreceiving machine's home directory. Ignored for every other destination.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "pane_id": {
               "type": [
@@ -2236,7 +2243,7 @@
           "type": "object"
         },
         "FilePutDestination": {
-          "description": "Destination kind a client may name. The client never names a path.",
+          "description": "Destination kind a client may name. The client never names an absolute path; `HomePath`\ncarries a client-typed path in `FilePutBeginParams::home_path`, which the server resolves\nrelative to the receiving machine's home directory and validates the same way as every other\ndestination.",
           "oneOf": [
             {
               "const": "inbox",
@@ -2246,6 +2253,11 @@
             {
               "const": "pane_cwd",
               "description": "The named pane's launch working directory, resolved once at begin.",
+              "type": "string"
+            },
+            {
+              "const": "home_path",
+              "description": "A client-typed path, resolved relative to the receiving machine's home directory.",
               "type": "string"
             }
           ]

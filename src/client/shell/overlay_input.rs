@@ -890,8 +890,27 @@ impl ClientShellState {
                     }
                 }
                 KeyCode::Esc => self.cancel_file_upload(outcome),
-                KeyCode::Tab => self.toggle_file_upload_destination(outcome),
-                _ => {}
+                KeyCode::Tab => self.cycle_file_upload_destination(outcome),
+                _ => {
+                    // While the typed-path destination is selected and the transfer has not
+                    // started, every other key edits the path instead of doing nothing.
+                    let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
+                        return;
+                    };
+                    if upload.running
+                        || upload.done
+                        || !matches!(
+                            upload.destination,
+                            crate::api::schema::FilePutDestination::HomePath
+                        )
+                    {
+                        return;
+                    }
+                    if upload.home_path_input.handle_key(key).is_some() {
+                        self.file_upload_home_path = upload.home_path_input.as_str().to_owned();
+                        outcome.repaint = true;
+                    }
+                }
             }
             return;
         }

@@ -115,32 +115,95 @@ fn starts_with_denylisted(path: &Path, prefix: &Path) -> bool {
     })
 }
 
+/// The reason a component is refused, shared by `validate_component` (generic message) and
+/// `resolve_home_relative_components` (names the offending component, since the user typed it
+/// deliberately and can act on being told which piece was wrong).
+fn component_reason(component: &str) -> Result<(), &'static str> {
+    if component.is_empty() {
+        return Err("empty component");
+    }
+    if component.len() > MAX_COMPONENT_BYTES {
+        return Err("component is too long");
+    }
+    if component == "." || component == ".." {
+        return Err("relative component");
+    }
+    if component.starts_with('.') {
+        return Err("leading dot");
+    }
+    if component.contains('/') || component.contains('\\') {
+        return Err("path separator inside a component");
+    }
+    if component.chars().any(char::is_control) {
+        return Err("control character");
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_component(component: &str) -> Result<(), TransferError> {
-    let invalid = |reason: &str| {
+    component_reason(component).map_err(|reason| {
         TransferError::new(
             "invalid_file_path",
             format!("this file name is not allowed: {reason}"),
         )
-    };
-    if component.is_empty() {
-        return Err(invalid("empty component"));
+    })
+}
+
+/// Split and validate a client-typed home-relative destination path (`FilePutDestination::HomePath`).
+/// This is attacker-influenced input in the same way every other destination is, so it goes
+/// through the same per-component checks as `validate_component`, but names the offending
+/// component in the refusal since the user typed this path themselves and can fix it.
+pub(crate) fn resolve_home_relative_components(typed: &str) -> Result<Vec<String>, TransferError> {
+    if typed.is_empty() {
+        return Err(TransferError::new(
+            "destination_refused",
+            "type a folder path under your home directory; the home directory itself is not a valid destination",
+        ));
     }
-    if component.len() > MAX_COMPONENT_BYTES {
-        return Err(invalid("component is too long"));
+    if typed.starts_with('/') || typed.starts_with('\\') {
+        return Err(TransferError::new(
+            "invalid_file_path",
+            "absolute paths are not accepted",
+        ));
     }
-    if component == "." || component == ".." {
-        return Err(invalid("relative component"));
+    let components: Vec<&str> = typed.split('/').collect();
+    if components.len() > MAX_COMPONENTS {
+        return Err(TransferError::new(
+            "invalid_file_path",
+            "this path nests too deeply",
+        ));
     }
-    if component.starts_with('.') {
-        return Err(invalid("leading dot"));
+    let mut resolved = Vec::with_capacity(components.len());
+    for component in components {
+        if let Err(reason) = component_reason(component) {
+            return Err(TransferError::new(
+                "invalid_file_path",
+                format!("{component:?} is not allowed in this path: {reason}"),
+            ));
+        }
+        resolved.push(component.to_owned());
     }
-    if component.contains('/') || component.contains('\\') {
-        return Err(invalid("path separator inside a component"));
-    }
-    if component.chars().any(char::is_control) {
-        return Err(invalid("control character"));
-    }
-    Ok(())
+    Ok(resolved)
+}
+
+/// Resolve, validate, and create a client-typed home-relative destination, returning the final
+/// directory. Runs the typed path through the same home-containment, denylist, and symlink checks
+/// as every other destination (`validate_root`), then creates any missing directory with the same
+/// symlink-safe, owner-only creation used for entry subdirectories (`ensure_directory_no_follow`).
+pub(crate) fn ensure_home_relative_root(
+    typed: &str,
+    home: &Path,
+) -> Result<PathBuf, TransferError> {
+    let components = resolve_home_relative_components(typed)?;
+    let candidate = components
+        .iter()
+        .fold(home.to_path_buf(), |mut path, component| {
+            path.push(component);
+            path
+        });
+    validate_root(&candidate, home)?;
+    ensure_directory_no_follow(home, &components)
+        .map_err(|err| TransferError::from_io("transfer_write_failed", &err))
 }
 
 pub(crate) fn resolve_relative_path(
@@ -459,6 +522,74 @@ mod tests {
             !message.contains(&dir.display().to_string()),
             "the server's absolute path leaked to the client: {message}"
         );
+    }
+
+    #[test]
+    fn an_empty_typed_path_is_refused_because_home_itself_is_not_a_valid_target() {
+        let err = resolve_home_relative_components("").unwrap_err();
+        assert_eq!(err.code, "destination_refused");
+    }
+
+    #[test]
+    fn a_typed_absolute_path_is_refused() {
+        for typed in ["/etc/passwd", "\\Windows\\System32"] {
+            let err = resolve_home_relative_components(typed).unwrap_err();
+            assert_eq!(err.code, "invalid_file_path", "{typed} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_typed_escaping_relative_path_is_refused_and_names_the_component() {
+        let err = resolve_home_relative_components("../../etc").unwrap_err();
+        assert_eq!(err.code, "invalid_file_path");
+        assert!(err.message.contains(".."), "{}", err.message);
+    }
+
+    #[test]
+    fn a_typed_leading_dot_component_is_refused_and_names_the_component() {
+        for (typed, offending) in [
+            (".ssh", ".ssh"),
+            ("projects/.config", ".config"),
+            (".local/bin", ".local"),
+        ] {
+            let err = resolve_home_relative_components(typed).unwrap_err();
+            assert_eq!(err.code, "invalid_file_path", "{typed} was accepted");
+            assert!(
+                err.message.contains(offending),
+                "{typed} refusal {:?} did not name {offending}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_typed_path_creates_missing_components_owner_only() {
+        let home = tempdir();
+        let root = ensure_home_relative_root("projects/demo/assets", &home).unwrap();
+        assert_eq!(root, home.join("projects/demo/assets"));
+        assert!(root.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for created in [
+                home.join("projects"),
+                home.join("projects/demo"),
+                home.join("projects/demo/assets"),
+            ] {
+                let mode = std::fs::metadata(&created).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{created:?} was not created owner-only");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_typed_path_through_a_symlinked_component_is_refused() {
+        let home = tempdir();
+        let outside = tempdir();
+        std::os::unix::fs::symlink(&outside, home.join("escape")).unwrap();
+        let err = ensure_home_relative_root("escape/payload", &home).unwrap_err();
+        assert_eq!(err.code, "destination_refused");
     }
 
     fn tempdir() -> PathBuf {

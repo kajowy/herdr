@@ -14,6 +14,9 @@ pub(super) struct ClientFileUploadOverlay {
     pub(super) skipped: Vec<String>,
     pub(super) index: usize,
     pub(super) destination: crate::api::schema::FilePutDestination,
+    /// The path typed for `FilePutDestination::HomePath`. Kept even while another destination is
+    /// selected, so cycling back to it does not lose what was typed.
+    pub(super) home_path_input: TextEditor,
     /// The endpoint and server boot this selection is being sent to, captured when the overlay
     /// opens. The committed paths are only ever handed back to this endpoint and boot.
     pub(super) endpoint_id: ClientEndpointId,
@@ -75,6 +78,7 @@ impl ClientShellState {
             skipped: collection.skipped,
             index: 0,
             destination: self.file_upload_destination,
+            home_path_input: TextEditor::from(self.file_upload_home_path.as_str()),
             endpoint_id: self.active_endpoint_id.clone(),
             boot_id: self
                 .snapshot
@@ -99,7 +103,8 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn toggle_file_upload_destination(&mut self, outcome: &mut ClientShellInput) {
+    /// Cycles pane working directory → inbox → typed home-relative path → pane working directory.
+    pub(super) fn cycle_file_upload_destination(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::FileUpload(upload)) = self.overlay.as_mut() else {
             return;
         };
@@ -107,11 +112,14 @@ impl ClientShellState {
             return;
         }
         upload.destination = match upload.destination {
-            crate::api::schema::FilePutDestination::Inbox => {
-                crate::api::schema::FilePutDestination::PaneCwd
-            }
             crate::api::schema::FilePutDestination::PaneCwd => {
                 crate::api::schema::FilePutDestination::Inbox
+            }
+            crate::api::schema::FilePutDestination::Inbox => {
+                crate::api::schema::FilePutDestination::HomePath
+            }
+            crate::api::schema::FilePutDestination::HomePath => {
+                crate::api::schema::FilePutDestination::PaneCwd
             }
         };
         self.file_upload_destination = upload.destination;
@@ -177,6 +185,11 @@ impl ClientShellState {
             sha256,
             destination: upload.destination,
             pane_id: upload.pane_id.clone(),
+            home_path: matches!(
+                upload.destination,
+                crate::api::schema::FilePutDestination::HomePath
+            )
+            .then(|| upload.home_path_input.trim().to_owned()),
         };
         upload.offset = 0;
         upload.transfer_id = None;

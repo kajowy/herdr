@@ -309,7 +309,7 @@ mod tests {
             ),
             (
                 "file.put.begin",
-                "4cc7348940e3ed347d7b168cd18d8ca2a049db97d9b408867790d5c582626f84",
+                "2cd3146887e237526177e577cac19922904945ef0c52b1e5e20f794d75fea639",
             ),
             (
                 "file.put.chunk",

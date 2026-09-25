@@ -197,6 +197,13 @@ impl HeadlessServer {
                 };
                 (cwd, false)
             }
+            api::schema::FilePutDestination::HomePath => {
+                let typed = params.home_path.as_deref().unwrap_or("");
+                let root = crate::server::file_transfer::destination::ensure_home_relative_root(
+                    typed, &home,
+                )?;
+                (root, true)
+            }
         };
         let accepted = self.file_transfers.begin(
             client_id,

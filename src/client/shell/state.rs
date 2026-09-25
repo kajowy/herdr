@@ -961,9 +961,12 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
-    /// Read by `open_file_upload`, now reachable from the picker keybinding. Written by
-    /// `toggle_file_upload_destination`, wired to the overlay's toggle control by a later task.
+    /// Read by `open_file_upload`. Written by `cycle_file_upload_destination`, wired to the
+    /// overlay's `Tab` control.
     pub(super) file_upload_destination: crate::api::schema::FilePutDestination,
+    /// The last path typed for `FilePutDestination::HomePath`, remembered for the rest of the
+    /// session so reopening the overlay does not lose it.
+    pub(super) file_upload_home_path: String,
 }
 
 pub(super) fn product_announcement_state(
@@ -1129,7 +1132,8 @@ impl ClientShellState {
             endpoint_error: None,
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
-            file_upload_destination: crate::api::schema::FilePutDestination::Inbox,
+            file_upload_destination: crate::api::schema::FilePutDestination::PaneCwd,
+            file_upload_home_path: String::new(),
         }
     }
 

@@ -475,8 +475,8 @@ fn the_overlay_shows_the_manifest_then_progress() {
     let frame = render_shell_frame(&mut state);
     assert!(frame.contains("1 file"), "manifest missing:\n{frame}");
     assert!(
-        frame.contains("herdr-inbox") || frame.contains("inbox"),
-        "{frame}"
+        frame.contains("this pane's directory"),
+        "the default destination is the pane working directory:\n{frame}"
     );
 
     let mut outcome = ClientShellInput::default();
@@ -519,10 +519,9 @@ fn the_manifest_counts_are_computed_once_and_not_recounted_per_frame() {
 }
 
 #[test]
-fn esc_cancels_and_tab_toggles_the_destination() {
-    let path = scratch_file("keys", &[0u8; 4]);
-    let (mut state, _boot_id) = shell_with_selection(&path);
-    state.handle_input_bytes(b"\t");
+fn the_default_destination_is_the_pane_working_directory() {
+    let path = scratch_file("default-destination", &[0u8; 4]);
+    let (state, _boot_id) = shell_with_selection(&path);
     let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
         panic!("overlay closed");
     };
@@ -530,8 +529,77 @@ fn esc_cancels_and_tab_toggles_the_destination() {
         upload.destination,
         crate::api::schema::FilePutDestination::PaneCwd
     );
+}
+
+#[test]
+fn esc_cancels_and_tab_cycles_all_three_destinations() {
+    let path = scratch_file("keys", &[0u8; 4]);
+    let (mut state, _boot_id) = shell_with_selection(&path);
+    let destination = |state: &ClientShellState| {
+        let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+            panic!("overlay closed");
+        };
+        upload.destination
+    };
+    assert_eq!(
+        destination(&state),
+        crate::api::schema::FilePutDestination::PaneCwd
+    );
+    state.handle_input_bytes(b"\t");
+    assert_eq!(
+        destination(&state),
+        crate::api::schema::FilePutDestination::Inbox
+    );
+    state.handle_input_bytes(b"\t");
+    assert_eq!(
+        destination(&state),
+        crate::api::schema::FilePutDestination::HomePath
+    );
+    state.handle_input_bytes(b"\t");
+    assert_eq!(
+        destination(&state),
+        crate::api::schema::FilePutDestination::PaneCwd
+    );
     state.handle_input_bytes(b"\x1b");
     assert!(state.overlay.is_none());
+}
+
+#[test]
+fn typing_while_the_home_path_destination_is_selected_edits_the_path_and_is_remembered() {
+    let path = scratch_file("home-path", &[0u8; 4]);
+    let (mut state, boot_id) = shell_with_selection(&path);
+    state.handle_input_bytes(b"\t\t"); // pane cwd -> inbox -> home path
+    state.handle_input_bytes(b"projects/demo");
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+        panic!("overlay closed");
+    };
+    assert_eq!(upload.home_path_input.as_str(), "projects/demo");
+    assert_eq!(state.file_upload_home_path, "projects/demo");
+
+    let mut outcome = ClientShellInput::default();
+    state.start_file_upload(&mut outcome);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("expected the begin request");
+    };
+    let crate::api::schema::Method::FilePutBegin(params) = &request.method else {
+        panic!("expected file.put.begin");
+    };
+    assert_eq!(
+        params.destination,
+        crate::api::schema::FilePutDestination::HomePath
+    );
+    assert_eq!(params.home_path.as_deref(), Some("projects/demo"));
+
+    // Cancel and reopen: the typed path is still there for the rest of the session.
+    let mut outcome = ClientShellInput::default();
+    state.cancel_file_upload(&mut outcome);
+    let mut outcome = ClientShellInput::default();
+    state.open_file_upload(collect(&[path]), &mut outcome);
+    let Some(ClientShellOverlay::FileUpload(upload)) = state.overlay.as_ref() else {
+        panic!("overlay closed");
+    };
+    assert_eq!(upload.home_path_input.as_str(), "projects/demo");
+    let _ = boot_id;
 }
 
 #[test]

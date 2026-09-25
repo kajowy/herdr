@@ -10,7 +10,14 @@ pub(super) fn render_file_upload_overlay(
     c: &ClientFileUploadOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let q = popup(b.area, 72, 9)?;
+    // The typed-path destination needs one extra line for its text input, only while it is the
+    // selected destination and there is still something to type into.
+    let editing_path = matches!(
+        c.destination,
+        crate::api::schema::FilePutDestination::HomePath
+    ) && !c.running
+        && !c.done;
+    let q = popup(b.area, 72, if editing_path { 10 } else { 9 })?;
     let i = panel(b, q, p.blue, p.panel_bg)?;
     put_text(
         b,
@@ -40,11 +47,19 @@ pub(super) fn render_file_upload_overlay(
     // be a configured inbox rather than the default. Before that, name the destination kind.
     let destination = if c.destination_label.is_empty() {
         match c.destination {
-            crate::api::schema::FilePutDestination::Inbox => "herdr-inbox",
-            crate::api::schema::FilePutDestination::PaneCwd => "this pane's directory",
+            crate::api::schema::FilePutDestination::Inbox => "herdr-inbox".to_owned(),
+            crate::api::schema::FilePutDestination::PaneCwd => "this pane's directory".to_owned(),
+            crate::api::schema::FilePutDestination::HomePath => {
+                let typed = c.home_path_input.trim();
+                if typed.is_empty() {
+                    "~/…".to_owned()
+                } else {
+                    format!("~/{typed}")
+                }
+            }
         }
     } else {
-        c.destination_label.as_str()
+        c.destination_label.clone()
     };
     put_text(
         b,
@@ -56,6 +71,18 @@ pub(super) fn render_file_upload_overlay(
     );
 
     let mut line = i.y + 2;
+    let mut cursor = None;
+    if editing_path {
+        let input = Rect::new(i.x + 1, line, i.width.saturating_sub(2), 1);
+        b.set_style(input, Style::default().fg(p.text).bg(p.surface0));
+        cursor = text_editor::render(
+            b,
+            input,
+            &c.home_path_input,
+            Style::default().fg(p.text).bg(p.surface0),
+        );
+        line += 1;
+    }
     if c.running || c.done {
         let total = c.entries.len();
         let index = c.index.min(total);
@@ -138,6 +165,7 @@ pub(super) fn render_file_upload_overlay(
         area: q,
         primary: *ok,
         cancel: *cancel,
+        cursor,
         ..OverlayRender::default()
     })
 }

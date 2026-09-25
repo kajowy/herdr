@@ -1,16 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-/// Destination kind a client may name. The client never names a path.
+/// Destination kind a client may name. The client never names an absolute path; `HomePath`
+/// carries a client-typed path in `FilePutBeginParams::home_path`, which the server resolves
+/// relative to the receiving machine's home directory and validates the same way as every other
+/// destination.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum FilePutDestination {
     /// The server-configured inbox directory. The only destination that accepts subdirectories.
-    #[default]
     Inbox,
     /// The named pane's launch working directory, resolved once at begin.
+    #[default]
     PaneCwd,
+    /// A client-typed path, resolved relative to the receiving machine's home directory.
+    HomePath,
 }
 
 /// What one `file.put.begin` creates. A directory entry carries no bytes and finishes at begin,
@@ -38,6 +43,10 @@ pub struct FilePutBeginParams {
     pub destination: FilePutDestination,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// The path typed by the client for `FilePutDestination::HomePath`, relative to the
+    /// receiving machine's home directory. Ignored for every other destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
