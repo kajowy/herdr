@@ -955,8 +955,8 @@ herdr agent wait w1:p1 --until blocked
 
 | Code | When it occurs |
 | --- | --- |
-| `destination_refused` | The resolved upload destination is outside the home directory, a denylisted system or config path, inside a `.git` directory, or the target pane has no resolvable working directory. |
-| `invalid_file_path` | A relative path is absolute, nests too deeply, has an empty or otherwise disallowed component, or the checksum is not a sha256 hex digest. |
+| `destination_refused` | The resolved upload destination is outside the home directory, a denylisted system or config path, inside a `.git` directory, the target pane has no resolvable working directory, or a typed home-relative destination is empty. |
+| `invalid_file_path` | A relative path is absolute, nests too deeply, has an empty or otherwise disallowed component, a typed home-relative destination escapes the home directory or names a disallowed component, or the checksum is not a sha256 hex digest. |
 | `transfer_busy` | The connection already has a transfer in flight. |
 | `transfer_checksum_mismatch` | The assembled bytes do not match the announced sha256. |
 | `transfer_chunk_too_large` | A single chunk exceeds the configured chunk size. |
