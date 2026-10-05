@@ -233,7 +233,8 @@ mod tests {
                     &remote,
                     2,
                     endpoint::ClientEndpointStatus::Online,
-                    now
+                    now,
+                    ""
                 ));
             }
         }
