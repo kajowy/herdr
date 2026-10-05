@@ -623,6 +623,7 @@ pub(super) fn handle_endpoint_attention(
         generation,
         endpoint::ClientEndpointStatus::Attention,
         now,
+        &message,
     );
     #[cfg(unix)]
     state.retire_endpoint_graphics(endpoint_id);
