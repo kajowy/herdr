@@ -12,13 +12,20 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
-// A machine in Attention still needs a human to look at it, but it is worth
-// a slow background retry instead of staying disabled forever.
-const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(600);
-// An SSH agent refusal (locked, not started yet) can be raised again by
-// retrying, but retrying on the fast reconnect path would re-trigger a
-// suppressed authorization prompt every couple of minutes.
-const AGENT_REFUSAL_RETRY_DELAY: Duration = Duration::from_secs(600);
+// A machine in Attention (bad host key, version mismatch, protocol failure,
+// Local waiting on its server, ...) usually needs a human action before it
+// can reconnect: updating the server, unlocking the agent, rebooting. There
+// is no event that tells us the cause was fixed, so retry rarely in the
+// background instead of parking forever; this lets herdr self-heal without
+// the user touching the sidebar once they've acted. Do not "fix" this back
+// to None: that was the bug (Attention never retried at all).
+const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(900);
+// An SSH agent refusal (locked, not started yet) clears the moment the user
+// unlocks the agent, so retry sooner than the generic Attention delay above.
+// Still far above MAX_RETRY_DELAY (the ordinary fast reconnect cap), because
+// retrying that often would re-trigger a suppressed authorization prompt
+// every couple of minutes.
+const AGENT_REFUSAL_RETRY_DELAY: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -223,6 +230,9 @@ impl EndpointSupervisors {
                 state.next_attempt = None;
             }
             ClientEndpointStatus::Attention => {
+                // Deliberate: every endpoint that lands in Attention keeps
+                // retrying slowly rather than parking. See the constant's
+                // doc comment for why.
                 state.online_since = None;
                 state.next_attempt = Some(now + ATTENTION_RETRY_DELAY);
             }
@@ -616,5 +626,15 @@ mod tests {
         let next_attempt = supervisors.endpoints[&endpoint_id].next_attempt;
         assert_eq!(next_attempt, Some(now + AGENT_REFUSAL_RETRY_DELAY));
         assert!(next_attempt.is_some_and(|deadline| deadline - now > MAX_RETRY_DELAY));
+    }
+
+    #[test]
+    fn agent_refusal_delay_sits_strictly_between_the_fast_cap_and_attention() {
+        // An agent refusal clears as soon as the user unlocks the agent, so
+        // it must come back sooner than a generic Attention failure, which
+        // usually needs a human action; both must still clear the ordinary
+        // reconnect cap so neither drifts back into hammering a locked agent.
+        assert!(AGENT_REFUSAL_RETRY_DELAY > MAX_RETRY_DELAY);
+        assert!(AGENT_REFUSAL_RETRY_DELAY < ATTENTION_RETRY_DELAY);
     }
 }
