@@ -118,7 +118,35 @@ pub(crate) fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String
     )
 }
 
+const AGENT_REFUSAL_NEEDLES: [&str; 4] = [
+    "agent refused operation",
+    "signing failed",
+    "agent has no identities",
+    "communication with agent failed",
+];
+
+/// Check whether a failure message came from the SSH agent refusing to sign,
+/// such as 1Password locking or not having started yet, rather than a
+/// genuinely wrong or unknown key.
+pub(crate) fn failure_message_is_agent_refusal(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    AGENT_REFUSAL_NEEDLES
+        .iter()
+        .any(|needle| message.contains(needle))
+}
+
+pub(crate) fn saved_ssh_failure_is_agent_refusal(error: &io::Error) -> bool {
+    failure_message_is_agent_refusal(&error.to_string())
+}
+
 pub(crate) fn saved_ssh_failure_needs_attention(error: &io::Error) -> bool {
+    // An agent refusal is transient: the key is fine, the agent is just
+    // locked or not ready yet. Check this before the permanent-failure
+    // needles below, since the refusal message also contains "permission
+    // denied".
+    if saved_ssh_failure_is_agent_refusal(error) {
+        return false;
+    }
     if matches!(
         error.kind(),
         io::ErrorKind::InvalidInput
@@ -211,5 +239,23 @@ mod tests {
             io::ErrorKind::TimedOut,
             "network timed out"
         )));
+    }
+
+    #[test]
+    fn agent_signing_refusals_are_transient_not_attention() {
+        for message in [
+            "agent refused operation",
+            "signing failed",
+            "agent has no identities",
+            "communication with agent failed",
+            "sign_and_send_pubkey: signing failed for RSA \"id_rsa\" from agent: agent refused operation",
+            // The refusal also contains "permission denied", so this proves
+            // the agent-refusal check runs before the permanent-failure needles.
+            "agent refused operation: Permission denied (publickey).",
+        ] {
+            let error = io::Error::other(message);
+            assert!(saved_ssh_failure_is_agent_refusal(&error));
+            assert!(!saved_ssh_failure_needs_attention(&error));
+        }
     }
 }

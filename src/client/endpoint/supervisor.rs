@@ -12,6 +12,12 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+// An SSH agent refusal (locked, not started yet) clears the moment the user
+// unlocks the agent, but far more slowly than an ordinary dropped link.
+// Keep it far above MAX_RETRY_DELAY (the ordinary fast reconnect cap),
+// because retrying that often would re-trigger a suppressed authorization
+// prompt every couple of minutes.
+const AGENT_REFUSAL_RETRY_DELAY: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -195,6 +201,7 @@ impl EndpointSupervisors {
         generation: u64,
         status: ClientEndpointStatus,
         now: Instant,
+        failure_message: &str,
     ) -> bool {
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return false;
@@ -229,14 +236,17 @@ impl EndpointSupervisors {
                     state.attempts = 0;
                 }
                 state.attempts = state.attempts.saturating_add(1);
-                let delay = retry_delay(state.attempts);
-                state.next_attempt = Some(
-                    now + if endpoint_id.is_local() {
+                let delay = if crate::remote::failure_message_is_agent_refusal(failure_message) {
+                    AGENT_REFUSAL_RETRY_DELAY
+                } else {
+                    let delay = retry_delay(state.attempts);
+                    if endpoint_id.is_local() {
                         delay.min(MAX_LOCAL_RETRY_DELAY)
                     } else {
                         delay
-                    },
-                );
+                    }
+                };
+                state.next_attempt = Some(now + delay);
             }
         }
         true
@@ -253,6 +263,7 @@ impl EndpointSupervisors {
             generation,
             ClientEndpointStatus::Reconnecting,
             now,
+            "",
         )
     }
 }
@@ -427,15 +438,15 @@ mod tests {
             supervisors.reconcile_profiles(&[profile.clone()], now),
             vec![id.clone()]
         );
-        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
+        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now, ""));
         profile.enabled = true;
         assert!(supervisors
             .reconcile_profiles(&[profile.clone()], now)
             .is_empty());
-        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
+        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now, ""));
         assert_eq!(supervisors.next_generation, 8);
         assert_eq!(supervisors.reconcile_profiles(&[], now), vec![id.clone()]);
-        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
+        assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now, ""));
     }
 
     #[test]
@@ -466,7 +477,7 @@ mod tests {
         supervisors.endpoints.get_mut(&id).unwrap().generation = Some(2);
         for attempt in 1..=5 {
             let connected = now + Duration::from_secs(attempt * 20);
-            assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
+            assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected, ""));
             let failed = connected + Duration::from_secs(15);
             assert!(supervisors.disconnected(&id, 2, failed));
             assert_eq!(
@@ -475,7 +486,7 @@ mod tests {
             );
         }
         let connected = now + Duration::from_secs(200);
-        assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
+        assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected, ""));
         let failed = connected + Duration::from_secs(60);
         assert!(supervisors.disconnected(&id, 2, failed));
         assert_eq!(
@@ -537,7 +548,7 @@ mod tests {
             .get_mut(&endpoint_id)
             .unwrap()
             .generation = Some(4);
-        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now));
+        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now, ""));
         assert!(!supervisors.disconnected(&endpoint_id, 3, now));
         assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());
         assert!(supervisors.disconnected(&endpoint_id, 4, now));
@@ -545,10 +556,71 @@ mod tests {
             supervisors.endpoints[&endpoint_id].next_attempt,
             Some(now + INITIAL_RETRY_DELAY)
         );
-        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Attention, now));
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Attention,
+            now,
+            ""
+        ));
         assert_eq!(
             supervisors.endpoints[&endpoint_id].next_attempt,
             Some(now + Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn attention_retries_but_disabled_stays_parked() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Attention,
+            now,
+            ""
+        ));
+        let attention_next = supervisors.endpoints[&endpoint_id].next_attempt;
+        assert!(attention_next.is_some_and(|deadline| deadline > now));
+
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Disabled,
+            now,
+            ""
+        ));
+        assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());
+    }
+
+    #[test]
+    fn agent_refusal_backs_off_longer_than_the_ordinary_reconnect_cap() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        let message = "sign_and_send_pubkey: signing failed for RSA \"id_rsa\" from agent: agent refused operation";
+        for _ in 0..3 {
+            assert!(supervisors.record_status(
+                &endpoint_id,
+                4,
+                ClientEndpointStatus::Reconnecting,
+                now,
+                message
+            ));
+        }
+        let next_attempt = supervisors.endpoints[&endpoint_id].next_attempt;
+        assert_eq!(next_attempt, Some(now + AGENT_REFUSAL_RETRY_DELAY));
+        assert!(next_attempt.is_some_and(|deadline| deadline - now > MAX_RETRY_DELAY));
     }
 }

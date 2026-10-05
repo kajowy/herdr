@@ -1383,7 +1383,7 @@ async fn run_client_loop(
                     status,
                     message,
                 } => {
-                    if !supervisors.record_status(&endpoint_id, generation, status, now) {
+                    if !supervisors.record_status(&endpoint_id, generation, status, now, &message) {
                         continue;
                     }
                     if status == endpoint::ClientEndpointStatus::Attention {
@@ -1416,6 +1416,7 @@ async fn run_client_loop(
                         generation,
                         endpoint::ClientEndpointStatus::Online,
                         now,
+                        "",
                     ) {
                         continue;
                     }
