@@ -23,6 +23,9 @@ pub(super) enum ClientLoopEvent {
     },
     EndpointSupervisor(endpoint::EndpointSupervisorEvent),
     EndpointCatalog(Result<Vec<endpoint::SavedSshEndpoint>, String>),
+    ReconnectEndpoint {
+        endpoint_id: endpoint::ClientEndpointId,
+    },
     ActivateEndpoint {
         endpoint_id: endpoint::ClientEndpointId,
         target: Option<shell::ClientEndpointFocusTarget>,

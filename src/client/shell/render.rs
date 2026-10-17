@@ -249,6 +249,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// The frame's reference time, so render stays pure and every row of one frame agrees.
+    pub(super) now: std::time::Instant,
 }
 
 pub(super) fn render_shell(

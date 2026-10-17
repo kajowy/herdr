@@ -65,7 +65,14 @@ impl ClientShellState {
         };
         let endpoint_id = hit.endpoint_id.clone();
         let collapse_toggle = super::contains(hit.collapse_toggle, point);
-        if collapse_toggle || endpoint_id == self.active_endpoint_id {
+        let reconnect_button = hit
+            .reconnect_button
+            .is_some_and(|button| super::contains(button, point));
+        if reconnect_button {
+            outcome
+                .actions
+                .push(ClientShellAction::ReconnectEndpoint { endpoint_id });
+        } else if collapse_toggle || endpoint_id == self.active_endpoint_id {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
@@ -78,7 +85,17 @@ impl ClientShellState {
                 endpoint_id,
                 target: None,
             });
+        } else if matches!(
+            self.endpoint_status(&endpoint_id),
+            Some(ClientEndpointStatus::Attention | ClientEndpointStatus::Reconnecting)
+        ) {
+            // A parked machine has no connection to select, so the name offers the only thing
+            // that can help: another attempt now.
+            outcome
+                .actions
+                .push(ClientShellAction::ReconnectEndpoint { endpoint_id });
         } else {
+            // A disabled machine has to be enabled first, which is a CLI operation today.
             let label = self.endpoint_label(&endpoint_id).to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));
             outcome.repaint = true;

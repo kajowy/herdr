@@ -97,6 +97,8 @@ pub(super) fn render_collapsed(
             hits.machines.push(MachineHit {
                 rect,
                 collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
+                // The narrow rail has no room for a reconnect affordance.
+                reconnect_button: None,
                 endpoint_id: endpoint.endpoint_id.clone(),
             });
             y = y.saturating_add(1);
@@ -427,6 +429,7 @@ pub(super) fn render_expanded(
                     marker,
                     endpoint,
                     collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
+                    state.now,
                     palette,
                 );
                 hits.machines.push(MachineHit {
@@ -437,6 +440,7 @@ pub(super) fn render_expanded(
                         u16::from(rect.width > 1),
                         1,
                     ),
+                    reconnect_button: reconnect_button_rect(rect, endpoint.status),
                     endpoint_id: endpoint.endpoint_id.clone(),
                 });
                 y = y
@@ -654,12 +658,23 @@ fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
         .map_or("Local", |endpoint| endpoint.label.as_str())
 }
 
+/// The cell at a machine row's right edge that asks its supervisor for an attempt now, for the
+/// statuses that leave the endpoint waiting on one.
+fn reconnect_button_rect(rect: Rect, status: ClientEndpointStatus) -> Option<Rect> {
+    (matches!(
+        status,
+        ClientEndpointStatus::Attention | ClientEndpointStatus::Reconnecting
+    ) && rect.width > 2)
+        .then(|| Rect::new(rect.right().saturating_sub(1), rect.y, 1, 1))
+}
+
 fn render_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
     marker: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
+    now: std::time::Instant,
     palette: &Palette,
 ) {
     if highlighted {
@@ -676,14 +691,24 @@ fn render_endpoint_row(
     } else if state.is_empty() {
         glyph.to_owned()
     } else {
-        format!("{glyph} {state}")
+        match super::endpoints::reconnect_countdown(endpoint.next_attempt_at, now) {
+            Some(countdown) => format!("{glyph} {state} · {countdown}"),
+            None => format!("{glyph} {state}"),
+        }
     };
-    let signal_width = display_width(&signal).min(rect.width);
+    let reconnect = reconnect_button_rect(rect, endpoint.status);
+    let reserved = reconnect.map_or(0, |button| button.width);
+    let signal_area = Rect {
+        width: rect.width.saturating_sub(reserved),
+        ..rect
+    };
+    let signal_width = display_width(&signal).min(signal_area.width);
     put_text(
         buffer,
         rect.x,
         rect.y,
-        rect.width.saturating_sub(signal_width.saturating_add(1)),
+        rect.width
+            .saturating_sub(signal_width.saturating_add(1).saturating_add(reserved)),
         &format!(" {marker} {}", endpoint.label),
         Style::default()
             .fg(
@@ -695,5 +720,21 @@ fn render_endpoint_row(
             )
             .add_modifier(Modifier::BOLD),
     );
-    put_right_text(buffer, rect, rect.y, &signal, Style::default().fg(color));
+    put_right_text(
+        buffer,
+        signal_area,
+        rect.y,
+        &signal,
+        Style::default().fg(color),
+    );
+    if let Some(button) = reconnect {
+        put_text(
+            buffer,
+            button.x,
+            button.y,
+            button.width,
+            "\u{27f3}",
+            Style::default().fg(color),
+        );
+    }
 }

@@ -447,7 +447,9 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         state.set_snapshot(Box::new(local));
         assert_eq!(state.navigate_workspace_id, selected);
         match invalidation {
-            "offline" => state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting),
+            "offline" => {
+                state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting, None)
+            }
             "disabled" => {
                 let mut profile = remote_profile();
                 profile.enabled = false;
@@ -482,7 +484,11 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
 fn navigation_uses_displayed_group_order_when_local_is_unavailable() {
     for cols in [100, 44] {
         let (mut state, remote) = navigation_state(grouped_workspaces());
-        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+        state.set_endpoint_status(
+            &ClientEndpointId::Local,
+            ClientEndpointStatus::Reconnecting,
+            None,
+        );
         state.select_unavailable_local();
         state.sidebar_collapsed = true;
         state.compose(cols, 18).unwrap();
@@ -579,7 +585,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
             &remote_id,
             if cols == 44 { "ws_14" } else { "ws_15" },
         );
-        state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting);
+        state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting, None);
         preview_key(&mut state, b"\x1b[B");
         assert_selected(&state, &ClientEndpointId::Local, "ws_1");
     }
@@ -743,12 +749,20 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         match change {
             "disconnect" => {
                 state.mark_endpoint_disconnected(&ClientEndpointId::Local);
-                state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+                state.set_endpoint_status(
+                    &ClientEndpointId::Local,
+                    ClientEndpointStatus::Online,
+                    None,
+                );
                 state.set_snapshot(Box::new(snapshot));
             }
             "retire" => {
                 state.retire_endpoint(&ClientEndpointId::Local);
-                state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+                state.set_endpoint_status(
+                    &ClientEndpointId::Local,
+                    ClientEndpointStatus::Online,
+                    None,
+                );
                 state.set_snapshot(Box::new(snapshot));
             }
             "boot" => {
@@ -769,7 +783,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
                 let profile = remote_profile();
                 let remote = ClientEndpointId::Ssh(profile.id.clone());
                 state.set_endpoint_catalog(&[profile]);
-                state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+                state.set_endpoint_status(&remote, ClientEndpointStatus::Online, None);
                 state.set_endpoint_snapshot(&remote, Box::new(snapshot));
                 assert!(state.activate_endpoint_projection(&remote));
                 assert!(state.pending_workspace_highlight.is_none());

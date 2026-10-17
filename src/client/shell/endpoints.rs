@@ -22,11 +22,16 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    /// When the endpoint supervisor will try to connect again, for the sidebar countdown.
+    /// `None` while nothing is scheduled.
+    pub(crate) next_attempt_at: Option<std::time::Instant>,
 }
 
 pub(super) struct MachineHit {
     pub(super) rect: Rect,
     pub(super) collapse_toggle: Rect,
+    /// The cell offering a manual reconnect, for the statuses that park the endpoint.
+    pub(super) reconnect_button: Option<Rect>,
     pub(super) endpoint_id: ClientEndpointId,
 }
 
@@ -82,6 +87,7 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                next_attempt_at: previous.and_then(|endpoint| endpoint.next_attempt_at),
             });
         }
 
@@ -126,13 +132,17 @@ impl ClientShellState {
             endpoint.agent_view_projection = None;
             endpoint.pending_agent_view_projection = None;
             endpoint.agent_view_projection_supported = false;
+            endpoint.next_attempt_at = None;
         }
     }
 
+    /// Record an endpoint's status and, when its supervisor has one scheduled, the instant of
+    /// the next automatic connection attempt.
     pub(crate) fn set_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
+        next_attempt_at: Option<std::time::Instant>,
     ) {
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
@@ -143,11 +153,13 @@ impl ClientShellState {
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
             endpoint.status = status;
+            endpoint.next_attempt_at = next_attempt_at;
         }
     }
 
     pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
-        self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting);
+        // A fresh retry schedule only exists once the supervisor parks the endpoint.
+        self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting, None);
         if endpoint_id == &self.active_endpoint_id {
             let pending = self.pending_requests.keys().cloned().collect::<Vec<_>>();
             for request_id in pending {
@@ -699,6 +711,25 @@ pub(super) fn endpoint_status_presentation(
     }
 }
 
+/// The time left before the next automatic attempt, rounded up, for the sidebar status text.
+/// `None` when nothing is scheduled or the attempt is already due.
+pub(super) fn reconnect_countdown(
+    next_attempt_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<String> {
+    let remaining = next_attempt_at?.saturating_duration_since(now);
+    let seconds = remaining
+        .as_secs()
+        .saturating_add(u64::from(remaining.subsec_nanos() > 0));
+    (seconds > 0).then(|| {
+        if seconds < 60 {
+            format!("{seconds}s")
+        } else {
+            format!("{}m", seconds.div_ceil(60))
+        }
+    })
+}
+
 pub(super) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
@@ -712,5 +743,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        next_attempt_at: None,
     }
 }

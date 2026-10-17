@@ -15,7 +15,7 @@ fn state_with_two_collapsed_machines() -> ClientShellState {
     };
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
@@ -146,4 +146,87 @@ fn the_collapsed_machines_section_round_trips_through_preferences() {
     );
     assert!(reloaded.machines_section_collapsed);
     let _ = std::fs::remove_file(&path);
+}
+
+fn state_with_one_machine(
+    status: ClientEndpointStatus,
+    next_attempt_at: Option<std::time::Instant>,
+) -> (ClientShellState, ClientEndpointId) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
+        label: "hellgate".into(),
+        target: "dev@hellgate.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, status, next_attempt_at);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    (state, endpoint_id)
+}
+
+fn machine_row_text(state: &mut ClientShellState, endpoint_id: &ClientEndpointId) -> String {
+    let frame = state.compose(100, 30).expect("machines sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    let rect = state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == endpoint_id)
+        .expect("machine hit")
+        .rect;
+    (rect.x..rect.right())
+        .map(|x| buffer[(x, rect.y)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+#[test]
+fn the_reconnect_glyph_marks_only_machines_with_a_pending_attempt() {
+    for (status, expected) in [
+        (ClientEndpointStatus::Online, false),
+        (ClientEndpointStatus::Disabled, false),
+        (ClientEndpointStatus::Attention, true),
+        (ClientEndpointStatus::Reconnecting, true),
+    ] {
+        let (mut state, endpoint_id) = state_with_one_machine(status, None);
+        let row = machine_row_text(&mut state, &endpoint_id);
+        assert_eq!(row.contains('⟳'), expected, "{status:?}: {row}");
+        assert_eq!(
+            state
+                .hits
+                .machines
+                .iter()
+                .find(|hit| hit.endpoint_id == endpoint_id)
+                .expect("machine hit")
+                .reconnect_button
+                .is_some(),
+            expected,
+            "{status:?}"
+        );
+    }
+}
+
+#[test]
+fn a_parked_machine_row_counts_down_to_its_next_attempt() {
+    let now = std::time::Instant::now();
+    for (delay, expected) in [(240, "4m"), (45, "45s")] {
+        let (mut state, endpoint_id) = state_with_one_machine(
+            ClientEndpointStatus::Attention,
+            Some(now + std::time::Duration::from_secs(delay)),
+        );
+        let row = machine_row_text(&mut state, &endpoint_id);
+        assert!(
+            row.contains(&format!("! attention · {expected}")),
+            "{delay}s: {row}"
+        );
+    }
+    let (mut state, endpoint_id) = state_with_one_machine(ClientEndpointStatus::Attention, None);
+    let row = machine_row_text(&mut state, &endpoint_id);
+    assert!(row.contains("! attention"), "{row}");
+    assert!(!row.contains('·'), "{row}");
 }

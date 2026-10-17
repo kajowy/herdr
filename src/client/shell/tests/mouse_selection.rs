@@ -596,6 +596,7 @@ fn reconnect_word_selection_tracks_content_changes() {
         state.set_endpoint_status(
             &endpoint_id,
             crate::client::endpoint::ClientEndpointStatus::Online,
+            None,
         );
         assert!(state.activate_endpoint_projection(&endpoint_id));
         state.set_pane_surface(next_surface);

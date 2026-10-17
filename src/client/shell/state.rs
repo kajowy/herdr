@@ -256,6 +256,11 @@ pub(crate) enum ClientShellAction {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
     },
+    /// Ask a parked endpoint's supervisor to attempt a connection now instead of waiting for its
+    /// scheduled retry.
+    ReconnectEndpoint {
+        endpoint_id: ClientEndpointId,
+    },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
     ChooseFiles,

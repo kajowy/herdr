@@ -20,7 +20,7 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
-    fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
+    fn compose_unavailable(&mut self, cols: u16, rows: u16, now: std::time::Instant) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         buffer.set_style(
@@ -78,6 +78,7 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
+            now,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -140,7 +141,8 @@ impl ClientShellState {
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
-        self.last_composed_at = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.last_composed_at = Some(now);
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
@@ -159,7 +161,7 @@ impl ClientShellState {
                     && self.navigation_target_valid(&pending.target)
             });
         if self.snapshot.is_none() || self.pane_surface.is_none() {
-            return Some(self.compose_unavailable(cols, rows));
+            return Some(self.compose_unavailable(cols, rows, now));
         }
         let snapshot = self.snapshot.as_deref()?;
         // Do not compose a retained surface while waiting for its matching snapshot or
@@ -222,6 +224,7 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                now,
             },
         );
         self.hits.panes = surface

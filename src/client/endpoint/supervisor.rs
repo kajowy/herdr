@@ -280,9 +280,6 @@ impl EndpointSupervisors {
 
     /// Force a parked endpoint to attempt reconnecting on the next
     /// `spawn_due` pass instead of waiting for its scheduled retry.
-    // Not yet wired to a UI action; this is the supervisor-side half of a
-    // user-triggered "reconnect now" command landing in a follow-up change.
-    #[allow(dead_code)]
     pub(crate) fn request_now(&mut self, endpoint_id: &ClientEndpointId, now: Instant) -> bool {
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return false;
@@ -296,9 +293,6 @@ impl EndpointSupervisors {
     }
 
     /// The scheduled time of the next automatic attempt, for UI countdowns.
-    // Not yet wired to a UI view; this is the supervisor-side half of a
-    // reconnect countdown landing in a follow-up change.
-    #[allow(dead_code)]
     pub(crate) fn next_attempt_at(&self, endpoint_id: &ClientEndpointId) -> Option<Instant> {
         self.endpoints.get(endpoint_id)?.next_attempt
     }
