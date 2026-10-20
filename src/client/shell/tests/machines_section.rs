@@ -329,13 +329,22 @@ fn the_collapsed_machines_band_keeps_the_spaces_band_visible() {
 }
 
 #[test]
-fn clicking_the_active_machine_row_neither_collapses_nor_activates() {
+fn clicking_the_active_machine_row_re_activates_it_without_collapsing() {
     let (mut state, _) = state_with_two_machines();
     sidebar_rows(&mut state);
     let rect = machine_rect(&state, &ClientEndpointId::Local);
     let outcome = click_at(&mut state, rect.x + 3, rect.y);
     assert!(outcome.repaint);
-    assert!(outcome.actions.is_empty());
+    // Re-activating the machine on display is what cancels a switch waiting on another one.
+    assert!(
+        matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::ActivateEndpoint { endpoint_id, .. }]
+                if endpoint_id == &ClientEndpointId::Local
+        ),
+        "{:?}",
+        outcome.actions
+    );
     assert!(state.collapsed_endpoints.is_empty());
 }
 

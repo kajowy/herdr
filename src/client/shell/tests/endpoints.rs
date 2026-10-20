@@ -1590,11 +1590,11 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
 
 #[test]
 fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
-    for workspace in [false, true] {
+    for (workspace, nest_spaces) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut state, remote) = state_with_remote();
-        // The machine row cancels a pending switch by re-activating itself, which the nested
-        // layout keeps; the flat layout leaves that row inert.
-        state.config.machines_nest_spaces = true;
+        // The machine row cancels a pending switch by re-activating itself in either layout.
+        // Only the nested layout carries a workspace row for the machine on display.
+        state.config.machines_nest_spaces = nest_spaces;
         state.compose(100, 28).unwrap();
         let mut pending = ClientShellInput::default();
         assert!(state.activate_endpoint(remote, &mut pending));

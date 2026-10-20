@@ -82,8 +82,12 @@ impl ClientShellState {
                 self.activate_endpoint(endpoint_id, outcome);
             }
         } else if endpoint_id == self.active_endpoint_id {
-            // A row that nests no spaces has nothing to fold, and this machine is already active.
+            // A row that nests no spaces has nothing to fold, but re-activating the machine on
+            // display still cancels a switch that is waiting on another one.
             outcome.repaint = true;
+            if endpoint_id.is_local() {
+                self.activate_endpoint(endpoint_id, outcome);
+            }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,
