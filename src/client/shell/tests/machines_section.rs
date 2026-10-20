@@ -75,7 +75,7 @@ fn collapsed_machines_shrink_the_section_to_its_content() {
     let rows = sidebar_rows(&mut state);
     assert_eq!(rows[0], " ▾ machines");
     assert_eq!(rows[6], "─".repeat(25));
-    assert!(rows[7].starts_with(" agents"));
+    assert!(rows[7].starts_with(" ▾ agents"));
     assert_eq!(state.hits.sidebar_section_divider.y, 6);
 }
 
@@ -134,7 +134,7 @@ fn clicking_the_machines_header_collapses_the_whole_section() {
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"));
     assert_eq!(rows[1], "─".repeat(25));
-    assert!(rows[2].starts_with(" agents"));
+    assert!(rows[2].starts_with(" ▾ agents"));
     assert_eq!(state.hits.sidebar_section_divider, Rect::default());
     assert!(state.hits.machines.is_empty());
     assert!(!state.hits.machines_section_toggle.is_empty());
@@ -244,7 +244,7 @@ fn folding_both_bands_keeps_their_headers_and_the_footer() {
     assert_eq!(rows[1], " ▸ spaces · Local");
     assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
     assert_eq!(rows[3], "─".repeat(25));
-    assert!(rows[4].starts_with(" agents"), "{:?}", rows[4]);
+    assert!(rows[4].starts_with(" ▾ agents"), "{:?}", rows[4]);
     assert!(state.hits.machines.is_empty());
     assert!(state.hits.workspaces.is_empty());
     assert_eq!(state.hits.new_workspace.y, 2);
@@ -540,7 +540,7 @@ fn folding_both_bands_frees_the_rows_a_dragged_divider_claimed() {
     assert_eq!(rows[1], " ▸ spaces · Local");
     assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
     assert_eq!(rows[3], "─".repeat(25));
-    assert!(rows[4].starts_with(" agents"), "{:?}", rows[4]);
+    assert!(rows[4].starts_with(" ▾ agents"), "{:?}", rows[4]);
     assert_eq!(state.hits.sidebar_section_divider.y, 3);
 }
 
@@ -594,4 +594,174 @@ fn the_band_spacer_follows_the_machines_fold() {
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
     assert_eq!(rows[1], " ▾ spaces · Local");
+}
+
+#[test]
+fn clicking_the_agents_header_collapses_the_panel() {
+    let (mut state, _) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    let header = state.hits.agents_section_toggle;
+    assert!(!header.is_empty());
+    let outcome = click_at(&mut state, header.x + 3, header.y);
+    assert!(outcome.repaint);
+    assert!(outcome.actions.is_empty());
+    assert!(state.agents_section_collapsed);
+
+    let rows = sidebar_rows(&mut state);
+    let divider = state.hits.sidebar_section_divider.y;
+    assert_eq!(rows[divider as usize], "─".repeat(25));
+    assert!(
+        rows[divider as usize + 1].starts_with(" ▸ agents"),
+        "{:?}",
+        rows[divider as usize + 1]
+    );
+    assert!(state.hits.endpoint_agents.is_empty());
+    assert!(state.hits.agent_body.is_empty());
+    assert_eq!(rows[divider as usize + 2], "");
+}
+
+#[test]
+fn the_agents_keybinding_toggles_the_panel() {
+    let (mut state, _) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    for expected in [true, false] {
+        for key in [
+            crate::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            crate::input::TerminalKey::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+        ] {
+            state.handle_raw_events(vec![RawInputEvent::Key(key)]);
+        }
+        assert_eq!(state.agents_section_collapsed, expected);
+    }
+}
+
+#[test]
+fn the_collapsed_agents_panel_round_trips_through_preferences() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-agents-section-prefs-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let config =
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.agents_section_collapsed = true;
+    state.persist_chrome_preferences(&mut ClientShellInput::default());
+
+    let reloaded = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone()),
+    );
+    assert!(reloaded.agents_section_collapsed);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn folding_the_agents_panel_frees_rows_despite_a_dragged_divider() {
+    let (mut state, _) = state_with_two_machines();
+    drag_section_divider(&mut state, 8);
+    state.agents_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    // The spaces band keeps every row above the folded agents header, so its footer sits one
+    // row above the separator instead of at the dragged divider.
+    let divider = state.hits.sidebar_section_divider.y;
+    assert!(divider > 8, "divider at {divider}");
+    assert!(rows[divider as usize - 1].starts_with(" new · Local"));
+    assert!(rows[divider as usize + 1].starts_with(" ▸ agents"));
+    assert!(!state.hits.workspaces.is_empty());
+}
+
+#[test]
+fn folding_every_section_leaves_only_the_headers_and_the_footer() {
+    let (mut state, _) = state_with_two_machines();
+    drag_section_divider(&mut state, 15);
+    state.machines_section_collapsed = true;
+    state.spaces_section_collapsed = true;
+    state.agents_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
+    assert_eq!(rows[1], " ▸ spaces · Local");
+    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[3], "─".repeat(25));
+    assert!(rows[4].starts_with(" ▸ agents"), "{:?}", rows[4]);
+    assert_eq!(state.hits.sidebar_section_divider.y, 3);
+    // Nothing but the sidebar collapse chevron sits below the folded agents header.
+    assert!(
+        rows[5..]
+            .iter()
+            .all(|row| row.trim() == "" || row.trim() == "\u{00ab}"),
+        "{:?}",
+        &rows[5..]
+    );
+}
+
+#[test]
+fn the_folded_agents_header_keeps_the_sort_toggle_clickable() {
+    let (mut state, _) = state_with_two_machines();
+    state.agents_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    let header = state.hits.agents_section_toggle;
+    assert!(rows[header.y as usize].ends_with("spaces"));
+    let sort = state.hits.agent_sort_toggle;
+    assert_eq!(sort.y, header.y);
+    // The fold hit stops short of the sort label, so the two affordances never overlap.
+    assert!(header.right() <= sort.x);
+    click_at(&mut state, sort.x, sort.y);
+    assert_eq!(
+        state.config.agent_panel_sort,
+        crate::config::AgentPanelSortConfig::Priority
+    );
+    assert!(state.agents_section_collapsed);
+}
+
+#[test]
+fn the_agents_panel_folds_in_the_nested_layout() {
+    let (mut state, _) = state_with_two_machines();
+    state.config.machines_nest_spaces = true;
+    sidebar_rows(&mut state);
+    let header = state.hits.agents_section_toggle;
+    click_at(&mut state, header.x + 3, header.y);
+    assert!(state.agents_section_collapsed);
+    let rows = sidebar_rows(&mut state);
+    let divider = state.hits.sidebar_section_divider.y;
+    assert!(rows[divider as usize + 1].starts_with(" ▸ agents"));
+    assert!(state.hits.endpoint_agents.is_empty());
+}
+
+#[test]
+fn the_agents_panel_folds_in_the_single_machine_sidebar() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    sidebar_rows(&mut state);
+    let header = state.hits.agents_section_toggle;
+    assert!(!header.is_empty());
+    click_at(&mut state, header.x + 3, header.y);
+    assert!(state.agents_section_collapsed);
+    let rows = sidebar_rows(&mut state);
+    let divider = state.hits.sidebar_section_divider.y;
+    assert_eq!(rows[divider as usize], "─".repeat(25));
+    assert!(rows[divider as usize + 1].starts_with(" ▸ agents"));
+    assert!(state.hits.agents.is_empty());
+    assert!(
+        rows[divider as usize + 2..]
+            .iter()
+            .all(|row| row.trim() == "" || row.trim() == "\u{00ab}"),
+        "{:?}",
+        &rows[divider as usize + 2..]
+    );
+}
+
+#[test]
+fn the_agents_toggle_does_nothing_in_the_grouped_single_machine_sidebar() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Grouped;
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let before = sidebar_rows(&mut state);
+    assert!(state.hits.agents_section_toggle.is_empty());
+    let mut outcome = ClientShellInput::default();
+    state.toggle_agents_section(&mut outcome);
+    assert!(!state.agents_section_collapsed);
+    assert!(!outcome.repaint);
+    assert_eq!(sidebar_rows(&mut state), before);
 }

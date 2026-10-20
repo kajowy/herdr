@@ -63,6 +63,7 @@ pub(crate) enum KeybindAction {
     ToggleSidebar,
     ToggleMachines,
     ToggleSpaces,
+    ToggleAgents,
     SendFiles,
     CyclePaneNext,
     CyclePanePrevious,
@@ -152,6 +153,7 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.toggle_sidebar, KeybindAction::ToggleSidebar),
         (&keybinds.toggle_machines, KeybindAction::ToggleMachines),
         (&keybinds.toggle_spaces, KeybindAction::ToggleSpaces),
+        (&keybinds.toggle_agents, KeybindAction::ToggleAgents),
         (&keybinds.send_files, KeybindAction::SendFiles),
         (&keybinds.reload_config, KeybindAction::ReloadConfig),
         (

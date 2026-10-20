@@ -187,6 +187,10 @@ pub(crate) fn keybind_help_groups(
                     "toggle spaces section",
                 ),
                 entry(
+                    binding_label(&keybinds.toggle_agents),
+                    "toggle agents panel",
+                ),
+                entry(
                     binding_label(&keybinds.send_files),
                     "send files to this machine",
                 ),

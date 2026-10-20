@@ -70,6 +70,7 @@ impl ClientShellState {
             sidebar_section_split_manual: self.sidebar_section_split_manual,
             machines_section_collapsed: self.machines_section_collapsed,
             spaces_section_collapsed: self.spaces_section_collapsed,
+            agents_section_collapsed: self.agents_section_collapsed,
             tab_drag_insert_index: None,
             selected_workspace_id: self
                 .navigate_workspace_id
@@ -217,6 +218,7 @@ impl ClientShellState {
                 sidebar_section_split_manual: self.sidebar_section_split_manual,
                 machines_section_collapsed: self.machines_section_collapsed,
                 spaces_section_collapsed: self.spaces_section_collapsed,
+                agents_section_collapsed: self.agents_section_collapsed,
                 tab_drag_insert_index,
                 selected_workspace_id: self
                     .navigate_workspace_id

@@ -469,6 +469,8 @@ pub struct KeysConfig {
     pub toggle_machines: BindingConfig,
     /// Fold the sidebar spaces section to its header. Default: "prefix+shift+s"
     pub toggle_spaces: BindingConfig,
+    /// Fold the sidebar agents panel to its header. Default: "prefix+shift+a"
+    pub toggle_agents: BindingConfig,
     /// Send local files to the focused pane's machine. Default: "prefix+u"
     pub send_files: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
@@ -607,6 +609,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_spaces: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_agents: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     send_files: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
@@ -699,6 +703,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_sidebar);
         apply_field!(toggle_machines);
         apply_field!(toggle_spaces);
+        apply_field!(toggle_agents);
         apply_field!(send_files);
         apply_field!(indexed);
         apply_field!(command);
@@ -807,6 +812,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(toggle_machines, keybinds.toggle_machines);
         copy_effective_action_field!(toggle_spaces, keybinds.toggle_spaces);
+        copy_effective_action_field!(toggle_agents, keybinds.toggle_agents);
         copy_effective_action_field!(send_files, keybinds.send_files);
         copy_user_field!(indexed);
 
@@ -1193,6 +1199,7 @@ impl Default for KeysConfig {
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_machines: BindingConfig::one("prefix+m"),
             toggle_spaces: BindingConfig::one("prefix+shift+s"),
+            toggle_agents: BindingConfig::one("prefix+shift+a"),
             send_files: BindingConfig::one("prefix+u"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),

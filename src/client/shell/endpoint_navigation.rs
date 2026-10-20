@@ -62,6 +62,25 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
     }
 
+    /// Fold the agents panel down to its header, or unfold it again. The single-machine grouped
+    /// sidebar is the agent tree itself, so it has no section above to take the freed rows and the
+    /// toggle does nothing there.
+    pub(super) fn toggle_agents_section(&mut self, outcome: &mut ClientShellInput) {
+        if !self.agents_section_can_fold() {
+            return;
+        }
+        self.agents_section_collapsed = !self.agents_section_collapsed;
+        self.agent_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
+    /// Whether the agents panel sits below a section that can take its rows when it folds.
+    pub(super) fn agents_section_can_fold(&self) -> bool {
+        self.endpoints.len() > 1
+            || self.config.agent_panel_sort != crate::config::AgentPanelSortConfig::Grouped
+    }
+
     pub(super) fn handle_endpoint_machine_click(
         &mut self,
         point: (u16, u16),

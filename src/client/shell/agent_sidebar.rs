@@ -10,6 +10,9 @@ use ratatui::{
 
 use super::*;
 
+/// Rows the agents panel keeps while it is folded: its separator and its header.
+pub(super) const AGENT_PANEL_HEADER_ROWS: u16 = 2;
+
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
@@ -55,6 +58,7 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    collapsed: bool,
     hits: &mut ShellHitMap,
 ) {
     if !render_agent_panel_header(
@@ -64,7 +68,9 @@ pub(super) fn render_agent_panel(
         config,
         hits,
         true,
-    ) {
+        Some(collapsed),
+    ) || collapsed
+    {
         return;
     }
 
@@ -95,6 +101,7 @@ pub(super) fn render_agent_panel_header(
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
     separator: bool,
+    fold: Option<bool>,
 ) -> bool {
     if area.height == 0 {
         return false;
@@ -112,12 +119,17 @@ pub(super) fn render_agent_panel_header(
     if area.height < 2 {
         return false;
     }
+    let marker = match fold {
+        Some(true) => " \u{25b8}",
+        Some(false) => " \u{25be}",
+        None => "",
+    };
     put_text(
         buffer,
         area.x,
         area.y + 1,
         area.width,
-        " agents",
+        &format!("{marker} agents"),
         Style::default()
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
@@ -136,6 +148,12 @@ pub(super) fn render_agent_panel_header(
     );
     hits.agent_sort_toggle = if config.mouse_capture && agent_view_label.is_none() {
         sort_rect
+    } else {
+        Rect::default()
+    };
+    // The fold hit stops short of the sort label so both affordances stay reachable, folded or not.
+    hits.agents_section_toggle = if fold.is_some() {
+        Rect::new(area.x, area.y + 1, area.width.saturating_sub(sort_width), 1)
     } else {
         Rect::default()
     };

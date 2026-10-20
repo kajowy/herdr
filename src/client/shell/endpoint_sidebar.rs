@@ -356,7 +356,16 @@ pub(super) fn render_expanded(
     // kept, so unfolding restores the dragged proportions.
     let band_folded =
         !nested && (state.machines_section_collapsed || state.spaces_section_collapsed);
-    let sizing = if nested && state.machines_section_collapsed {
+    // The legacy nested layout folds its one machines band away to a single header row.
+    let nested_folded = nested && state.machines_section_collapsed;
+    let sizing = if state.agents_section_collapsed {
+        // A folded agents panel keeps only its header, so the bands above take every row their
+        // content needs out of the rest, without the share cap a fitted section usually obeys.
+        crate::ui::SidebarSectionSizing::FitOverFolded {
+            content: if nested_folded { 1 } else { content_height },
+            folded_rows: super::agent_sidebar::AGENT_PANEL_HEADER_ROWS,
+        }
+    } else if nested_folded {
         crate::ui::SidebarSectionSizing::Collapsed
     } else if state.sidebar_section_split_manual && !band_folded {
         crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
@@ -378,7 +387,7 @@ pub(super) fn render_expanded(
         workspace_area.width,
         u16::from(workspace_area.height > 0),
     );
-    if nested && state.machines_section_collapsed {
+    if nested_folded {
         render_detail_and_toggle(
             buffer,
             area,
