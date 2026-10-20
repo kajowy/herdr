@@ -50,6 +50,18 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
     }
 
+    /// Fold the spaces band down to its header, or unfold it again. The legacy nested layout has
+    /// no separate spaces band, so the toggle does nothing there.
+    pub(super) fn toggle_spaces_section(&mut self, outcome: &mut ClientShellInput) {
+        if self.config.machines_nest_spaces {
+            return;
+        }
+        self.spaces_section_collapsed = !self.spaces_section_collapsed;
+        self.workspace_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
     pub(super) fn handle_endpoint_machine_click(
         &mut self,
         point: (u16, u16),

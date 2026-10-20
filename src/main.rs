@@ -191,6 +191,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
 # toggle_machines = "prefix+m"
+# toggle_spaces = "prefix+shift+s"   # fold the sidebar spaces section to its header
 # send_files = "prefix+u"
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.

@@ -332,14 +332,20 @@ pub(super) fn render_expanded(
     } else {
         machines_band_rows.saturating_add(2)
     };
+    // The folded spaces band keeps its header and the footer below it, and contributes no rows.
+    let spaces_collapsed = !nested && state.spaces_section_collapsed;
     // Band headers, every listed row, one free row that keeps the drop slot below the last space
     // reachable, and the footer that carries the new-workspace and menu affordances.
-    let content_height = row_heights
-        .iter()
-        .chain(gaps.iter())
-        .fold(band_rows.saturating_add(2), |total, rows| {
-            total.saturating_add(*rows)
-        });
+    let content_height = if spaces_collapsed {
+        band_rows.saturating_add(1)
+    } else {
+        row_heights
+            .iter()
+            .chain(gaps.iter())
+            .fold(band_rows.saturating_add(2), |total, rows| {
+                total.saturating_add(*rows)
+            })
+    };
     let sizing = if nested && state.machines_section_collapsed {
         crate::ui::SidebarSectionSizing::Collapsed
     } else if state.sidebar_section_split_manual {
@@ -383,19 +389,30 @@ pub(super) fn render_expanded(
             palette,
             hits,
         );
-        put_text(
-            buffer,
-            workspace_area.x,
-            workspace_area
-                .y
-                .saturating_add(machines_band_rows)
-                .saturating_add(1),
-            workspace_area.width,
-            &format!(" spaces · {}", active_endpoint_label(state)),
-            Style::default()
-                .fg(palette.overlay0)
-                .add_modifier(Modifier::BOLD),
-        );
+        let header_y = workspace_area
+            .y
+            .saturating_add(machines_band_rows)
+            .saturating_add(1);
+        // The footer owns the last row, so a sidebar too short for both drops the header.
+        if header_y < workspace_area.bottom().saturating_sub(1) {
+            let marker = if state.spaces_section_collapsed {
+                "\u{25b8}"
+            } else {
+                "\u{25be}"
+            };
+            put_text(
+                buffer,
+                workspace_area.x,
+                header_y,
+                workspace_area.width,
+                &format!(" {marker} spaces · {}", active_endpoint_label(state)),
+                Style::default()
+                    .fg(palette.overlay0)
+                    .add_modifier(Modifier::BOLD),
+            );
+            hits.spaces_section_toggle =
+                Rect::new(workspace_area.x, header_y, workspace_area.width, 1);
+        }
     }
     let body = Rect::new(
         workspace_area.x,
@@ -404,9 +421,13 @@ pub(super) fn render_expanded(
             .saturating_add(band_rows)
             .min(workspace_area.bottom()),
         workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(band_rows.saturating_add(1)),
+        if spaces_collapsed {
+            0
+        } else {
+            workspace_area
+                .height
+                .saturating_sub(band_rows.saturating_add(1))
+        },
     );
     hits.workspace_body = body;
     let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
@@ -495,6 +516,9 @@ pub(super) fn render_expanded(
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
             Row::Workspace { endpoint, entry } => {
+                if y >= body.bottom() {
+                    break;
+                }
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;

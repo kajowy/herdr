@@ -13,6 +13,9 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleMachines) => {
                 self.toggle_machines_section(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSpaces) => {
+                self.toggle_spaces_section(outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::SendFiles) => {
                 outcome.actions.push(ClientShellAction::ChooseFiles);
             }

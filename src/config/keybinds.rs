@@ -371,6 +371,7 @@ pub struct Keybinds {
     pub resize_pane_right: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
     pub toggle_machines: ActionKeybinds,
+    pub toggle_spaces: ActionKeybinds,
     pub send_files: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
 }
@@ -542,6 +543,7 @@ impl Config {
             resize_pane_right: empty_action!(),
             toggle_sidebar: empty_action!(),
             toggle_machines: empty_action!(),
+            toggle_spaces: empty_action!(),
             send_files: empty_action!(),
             custom_commands: Vec::new(),
         };
@@ -692,6 +694,7 @@ impl Config {
             apply_action!(keybinds.resize_pane_right, resize_pane_right, source);
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
             apply_action!(keybinds.toggle_machines, toggle_machines, source);
+            apply_action!(keybinds.toggle_spaces, toggle_spaces, source);
             apply_action!(keybinds.send_files, send_files, source);
 
             if source == field_source!(indexed) {

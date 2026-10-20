@@ -175,6 +175,96 @@ fn the_collapsed_machines_section_round_trips_through_preferences() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn clicking_the_spaces_header_collapses_the_band() {
+    let (mut state, _) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    let header = state.hits.spaces_section_toggle;
+    assert_eq!(header.y, 4);
+    let outcome = click_at(&mut state, header.x + 3, header.y);
+    assert!(outcome.repaint);
+    assert!(outcome.actions.is_empty());
+    assert!(state.spaces_section_collapsed);
+
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[0], " ▾ machines");
+    assert!(rows[1].contains("Local"), "{:?}", rows[1]);
+    assert_eq!(rows[4], " ▸ spaces · Local");
+    assert!(state.hits.workspaces.is_empty());
+    assert!(!state.hits.machines.is_empty());
+    assert!(!state.hits.spaces_section_toggle.is_empty());
+    // The footer keeps the only new-space and menu entry points reachable while the band is folded.
+    assert!(rows[5].starts_with(" new · Local"), "{:?}", rows[5]);
+    assert_eq!(state.hits.new_workspace.y, 5);
+    assert_eq!(state.hits.global_launcher.y, 5);
+}
+
+#[test]
+fn the_spaces_keybinding_toggles_the_band() {
+    let (mut state, _) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    for expected in [true, false] {
+        for key in [
+            crate::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            crate::input::TerminalKey::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+        ] {
+            state.handle_raw_events(vec![RawInputEvent::Key(key)]);
+        }
+        assert_eq!(state.spaces_section_collapsed, expected);
+    }
+}
+
+#[test]
+fn the_collapsed_spaces_band_round_trips_through_preferences() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-spaces-section-prefs-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let config =
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.spaces_section_collapsed = true;
+    state.persist_chrome_preferences(&mut ClientShellInput::default());
+
+    let reloaded = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone()),
+    );
+    assert!(reloaded.spaces_section_collapsed);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn folding_both_bands_keeps_their_headers_and_the_footer() {
+    let (mut state, _) = state_with_two_machines();
+    state.machines_section_collapsed = true;
+    state.spaces_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
+    assert_eq!(rows[2], " ▸ spaces · Local");
+    assert!(rows[3].starts_with(" new · Local"), "{:?}", rows[3]);
+    assert_eq!(rows[4], "─".repeat(25));
+    assert!(rows[5].starts_with(" agents"), "{:?}", rows[5]);
+    assert!(state.hits.machines.is_empty());
+    assert!(state.hits.workspaces.is_empty());
+    assert_eq!(state.hits.new_workspace.y, 3);
+    assert_eq!(state.hits.global_launcher.y, 3);
+    assert_eq!(state.hits.sidebar_section_divider.y, 4);
+}
+
+#[test]
+fn the_spaces_toggle_does_nothing_in_the_nested_layout() {
+    let (mut state, _) = state_with_two_machines();
+    state.config.machines_nest_spaces = true;
+    let before = sidebar_rows(&mut state);
+    assert!(state.hits.spaces_section_toggle.is_empty());
+    let mut outcome = ClientShellInput::default();
+    state.toggle_spaces_section(&mut outcome);
+    assert!(!state.spaces_section_collapsed);
+    assert!(!outcome.repaint);
+    assert_eq!(sidebar_rows(&mut state), before);
+}
+
 fn state_with_one_machine(
     status: ClientEndpointStatus,
     next_attempt_at: Option<std::time::Instant>,
@@ -294,7 +384,7 @@ fn the_machines_band_lists_machines_without_nesting_spaces() {
 fn the_spaces_band_follows_the_active_machine() {
     let (mut state, remote_id) = state_with_two_machines();
     let rows = sidebar_rows(&mut state);
-    assert_eq!(rows[4], " spaces · Local");
+    assert_eq!(rows[4], " ▾ spaces · Local");
     assert!(rows[5].contains("client-shell"), "{:?}", rows[5]);
     assert!(state
         .hits
@@ -308,7 +398,7 @@ fn the_spaces_band_follows_the_active_machine() {
     remote_surface.boot_id = "remote-boot".into();
     state.set_pane_surface(remote_surface);
     let rows = sidebar_rows(&mut state);
-    assert_eq!(rows[4], " spaces · hellgate");
+    assert_eq!(rows[4], " ▾ spaces · hellgate");
     assert!(rows[5].contains("remote-space"), "{:?}", rows[5]);
     assert!(state
         .hits
@@ -324,7 +414,7 @@ fn the_collapsed_machines_band_keeps_the_spaces_band_visible() {
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
     assert!(state.hits.machines.is_empty());
-    assert_eq!(rows[2], " spaces · Local");
+    assert_eq!(rows[2], " ▾ spaces · Local");
     assert!(!state.hits.workspaces.is_empty());
 }
 
