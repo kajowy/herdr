@@ -64,6 +64,7 @@ impl ClientShellState {
             return false;
         };
         let endpoint_id = hit.endpoint_id.clone();
+        let nests_spaces = hit.nests_spaces;
         let collapse_toggle = super::contains(hit.collapse_toggle, point);
         let reconnect_button = hit
             .reconnect_button
@@ -72,7 +73,7 @@ impl ClientShellState {
             outcome
                 .actions
                 .push(ClientShellAction::ReconnectEndpoint { endpoint_id });
-        } else if collapse_toggle || endpoint_id == self.active_endpoint_id {
+        } else if nests_spaces && (collapse_toggle || endpoint_id == self.active_endpoint_id) {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
@@ -80,6 +81,9 @@ impl ClientShellState {
             if !collapse_toggle && endpoint_id.is_local() {
                 self.activate_endpoint(endpoint_id, outcome);
             }
+        } else if endpoint_id == self.active_endpoint_id {
+            // A row that nests no spaces has nothing to fold, and this machine is already active.
+            outcome.repaint = true;
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,

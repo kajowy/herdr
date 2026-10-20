@@ -30,6 +30,8 @@ pub(crate) struct ClientShellEndpoint {
 pub(super) struct MachineHit {
     pub(super) rect: Rect,
     pub(super) collapse_toggle: Rect,
+    /// Whether this row carries the machine's spaces, which is what folding it hides.
+    pub(super) nests_spaces: bool,
     /// The cell offering a manual reconnect, for the statuses that park the endpoint.
     pub(super) reconnect_button: Option<Rect>,
     pub(super) endpoint_id: ClientEndpointId,

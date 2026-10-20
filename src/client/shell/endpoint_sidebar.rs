@@ -97,6 +97,7 @@ pub(super) fn render_collapsed(
             hits.machines.push(MachineHit {
                 rect,
                 collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
+                nests_spaces: true,
                 // The narrow rail has no room for a reconnect affordance.
                 reconnect_button: None,
                 endpoint_id: endpoint.endpoint_id.clone(),
@@ -246,10 +247,17 @@ pub(super) fn render_expanded(
             entry: WorkspaceEntry,
         },
     }
+    // Flat mode keeps the machines band free of spaces and lists the active machine's spaces in
+    // their own band, so only that machine contributes scrollable rows.
+    let nested = config.machines_nest_spaces;
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        rows.push(Row::Endpoint(endpoint_index));
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+        if nested {
+            rows.push(Row::Endpoint(endpoint_index));
+            if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+                continue;
+            }
+        } else if &endpoint.endpoint_id != state.active_endpoint_id {
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
@@ -312,15 +320,27 @@ pub(super) fn render_expanded(
             _ => 0,
         })
         .collect::<Vec<_>>();
-    // Header, every machine and space row, one free row that keeps the drop slot below the last
-    // space reachable, and the footer that carries the new-workspace and menu affordances.
+    // The machines band: its header plus one row per machine while it is unfolded.
+    let machines_band_rows = if nested || state.machines_section_collapsed {
+        1
+    } else {
+        (state.endpoints.len().min(u16::MAX as usize) as u16).saturating_add(1)
+    };
+    // Flat mode adds a blank separator row and the spaces header above the scrollable rows.
+    let band_rows = if nested {
+        WORKSPACE_HEADER_ROWS
+    } else {
+        machines_band_rows.saturating_add(2)
+    };
+    // Band headers, every listed row, one free row that keeps the drop slot below the last space
+    // reachable, and the footer that carries the new-workspace and menu affordances.
     let content_height = row_heights
         .iter()
         .chain(gaps.iter())
-        .fold(WORKSPACE_HEADER_ROWS.saturating_add(2), |total, rows| {
+        .fold(band_rows.saturating_add(2), |total, rows| {
             total.saturating_add(*rows)
         });
-    let sizing = if state.machines_section_collapsed {
+    let sizing = if nested && state.machines_section_collapsed {
         crate::ui::SidebarSectionSizing::Collapsed
     } else if state.sidebar_section_split_manual {
         crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
@@ -342,7 +362,7 @@ pub(super) fn render_expanded(
         workspace_area.width,
         u16::from(workspace_area.height > 0),
     );
-    if state.machines_section_collapsed {
+    if nested && state.machines_section_collapsed {
         render_detail_and_toggle(
             buffer,
             area,
@@ -354,13 +374,39 @@ pub(super) fn render_expanded(
         );
         return;
     }
+    if !nested {
+        render_machine_rows(
+            buffer,
+            workspace_area,
+            machines_band_rows,
+            state,
+            palette,
+            hits,
+        );
+        put_text(
+            buffer,
+            workspace_area.x,
+            workspace_area
+                .y
+                .saturating_add(machines_band_rows)
+                .saturating_add(1),
+            workspace_area.width,
+            &format!(" spaces · {}", active_endpoint_label(state)),
+            Style::default()
+                .fg(palette.overlay0)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
     let body = Rect::new(
         workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+        workspace_area
+            .y
+            .saturating_add(band_rows)
+            .min(workspace_area.bottom()),
         workspace_area.width,
         workspace_area
             .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+            .saturating_sub(band_rows.saturating_add(1)),
     );
     hits.workspace_body = body;
     let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
@@ -422,7 +468,7 @@ pub(super) fn render_expanded(
                 let endpoint = &state.endpoints[*index];
                 let rect = Rect::new(body.x, y, content_width, 1);
                 let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-                let marker = if collapsed { "▸" } else { "▾" };
+                let marker = if collapsed { "▸ " } else { "▾ " };
                 render_endpoint_row(
                     buffer,
                     rect,
@@ -440,6 +486,7 @@ pub(super) fn render_expanded(
                         u16::from(rect.width > 1),
                         1,
                     ),
+                    nests_spaces: true,
                     reconnect_button: reconnect_button_rect(rect, endpoint.status),
                     endpoint_id: endpoint.endpoint_id.clone(),
                 });
@@ -579,6 +626,48 @@ pub(super) fn render_expanded(
     );
 }
 
+/// Draw the machines band: one row per machine, with no fold affordance because the band never
+/// nests their spaces. `band_rows` counts the header, so the rows start one row below it.
+fn render_machine_rows(
+    buffer: &mut Buffer,
+    workspace_area: Rect,
+    band_rows: u16,
+    state: &ShellRenderState<'_>,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
+    if band_rows < 2 {
+        return;
+    }
+    let last_row = workspace_area.bottom().saturating_sub(1);
+    for (index, endpoint) in state.endpoints.iter().enumerate() {
+        let y = workspace_area
+            .y
+            .saturating_add(1)
+            .saturating_add(index.min(u16::MAX as usize) as u16);
+        if y >= last_row {
+            break;
+        }
+        let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
+        render_endpoint_row(
+            buffer,
+            rect,
+            "  ",
+            endpoint,
+            &endpoint.endpoint_id == state.active_endpoint_id,
+            state.now,
+            palette,
+        );
+        hits.machines.push(MachineHit {
+            rect,
+            collapse_toggle: Rect::default(),
+            nests_spaces: false,
+            reconnect_button: reconnect_button_rect(rect, endpoint.status),
+            endpoint_id: endpoint.endpoint_id.clone(),
+        });
+    }
+}
+
 /// Draw the agents panel below the machines section plus the sidebar collapse affordance.
 fn render_detail_and_toggle(
     buffer: &mut Buffer,
@@ -709,7 +798,7 @@ fn render_endpoint_row(
         rect.y,
         rect.width
             .saturating_sub(signal_width.saturating_add(1).saturating_add(reserved)),
-        &format!(" {marker} {}", endpoint.label),
+        &format!(" {marker}{}", endpoint.label),
         Style::default()
             .fg(
                 if matches!(endpoint.status, ClientEndpointStatus::Disabled) {

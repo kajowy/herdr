@@ -994,6 +994,9 @@ pub struct UiConfig {
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
+    /// Nest every machine's spaces under its row in the machines section. Default: false, which
+    /// lists machines only and gives the active machine's spaces their own band below.
+    pub machines_nest_spaces: bool,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1239,6 +1242,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
+            machines_nest_spaces: false,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1485,6 +1489,18 @@ agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+    }
+
+    #[test]
+    fn machines_nest_spaces_defaults_off_and_round_trips() {
+        assert!(!Config::default().ui.machines_nest_spaces);
+
+        let toml = r#"
+[ui]
+machines_nest_spaces = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.machines_nest_spaces);
     }
 
     #[test]

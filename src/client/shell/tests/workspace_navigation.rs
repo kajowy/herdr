@@ -28,6 +28,8 @@ fn grouped_workspaces() -> ClientShellSnapshot {
 
 fn navigation_state(mut projected: ClientShellSnapshot) -> (ClientShellState, ClientEndpointId) {
     let (mut state, remote) = state_with_remote();
+    // Navigation across machines only has rows to reveal while the spaces are nested.
+    state.config.machines_nest_spaces = true;
     state.set_snapshot(Box::new(projected.clone()));
     projected.boot_id = "remote-boot".into();
     state.set_endpoint_snapshot(&remote, Box::new(projected));
@@ -558,6 +560,8 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
 fn aggregate_navigation_reveals_overflow_and_preserves_order() {
     for (compact, cols) in [(true, 100), (false, 100), (false, 44)] {
         let (mut state, remote_id) = state_with_remote();
+        // Revealing an unfolded machine's overflow rows is a nested-layout behavior.
+        state.config.machines_nest_spaces = true;
         let mut remote = workspaces(15);
         remote.boot_id = "remote-boot".into();
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));

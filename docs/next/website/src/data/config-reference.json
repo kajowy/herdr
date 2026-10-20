@@ -1082,6 +1082,12 @@
           ]
         },
         {
+          "key": "ui.machines_nest_spaces",
+          "type": "boolean",
+          "default": "false",
+          "description": "Nest every machine's spaces under its row in the machines section. The default lists machines only and gives the active machine's spaces their own band below."
+        },
+        {
           "key": "ui.status_indicators",
           "type": "enum",
           "default": "\"dots\"",

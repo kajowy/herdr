@@ -4,7 +4,7 @@ use crate::client::endpoint::{
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
-fn state_with_two_collapsed_machines() -> ClientShellState {
+fn state_with_two_machines() -> (ClientShellState, ClientEndpointId) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let profile = SavedSshEndpoint {
         id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
@@ -20,10 +20,37 @@ fn state_with_two_collapsed_machines() -> ClientShellState {
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-space".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    (state, endpoint_id)
+}
+
+/// The legacy nested layout with both machines folded, for the fitted-sizing tests.
+fn state_with_two_collapsed_machines() -> ClientShellState {
+    let (mut state, endpoint_id) = state_with_two_machines();
+    state.config.machines_nest_spaces = true;
     state.collapsed_endpoints.insert(ClientEndpointId::Local);
     state.collapsed_endpoints.insert(endpoint_id);
     state
+}
+
+fn machine_rect(state: &ClientShellState, endpoint_id: &ClientEndpointId) -> Rect {
+    state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == endpoint_id)
+        .expect("machine hit")
+        .rect
+}
+
+fn click_at(state: &mut ClientShellState, column: u16, row: u16) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })])
 }
 
 fn sidebar_rows(state: &mut ClientShellState) -> Vec<String> {
@@ -229,4 +256,157 @@ fn a_parked_machine_row_counts_down_to_its_next_attempt() {
     let row = machine_row_text(&mut state, &endpoint_id);
     assert!(row.contains("! attention"), "{row}");
     assert!(!row.contains('·'), "{row}");
+}
+
+#[test]
+fn the_machines_band_lists_machines_without_nesting_spaces() {
+    let (mut state, remote_id) = state_with_two_machines();
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[0], " ▾ machines");
+    assert!(rows[1].contains("Local"), "{:?}", rows[1]);
+    assert!(rows[2].contains("hellgate"), "{:?}", rows[2]);
+    for row in &rows[1..3] {
+        assert!(!row.contains('▾') && !row.contains('▸'), "{row:?}");
+    }
+    assert_eq!(
+        state
+            .hits
+            .machines
+            .iter()
+            .map(|hit| hit.rect.y)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|hit| hit.collapse_toggle.is_empty()));
+    assert!(state.hits.workspaces.iter().all(|hit| hit.rect.y > 2));
+    assert!(!state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.endpoint_id == remote_id));
+}
+
+#[test]
+fn the_spaces_band_follows_the_active_machine() {
+    let (mut state, remote_id) = state_with_two_machines();
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[4], " spaces · Local");
+    assert!(rows[5].contains("client-shell"), "{:?}", rows[5]);
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| hit.endpoint_id == ClientEndpointId::Local));
+    assert!(!state.hits.workspaces.is_empty());
+
+    assert!(state.activate_endpoint_projection(&remote_id));
+    let mut remote_surface = surface();
+    remote_surface.boot_id = "remote-boot".into();
+    state.set_pane_surface(remote_surface);
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[4], " spaces · hellgate");
+    assert!(rows[5].contains("remote-space"), "{:?}", rows[5]);
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| hit.endpoint_id == remote_id));
+}
+
+#[test]
+fn the_collapsed_machines_band_keeps_the_spaces_band_visible() {
+    let (mut state, _) = state_with_two_machines();
+    state.machines_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
+    assert!(state.hits.machines.is_empty());
+    assert_eq!(rows[2], " spaces · Local");
+    assert!(!state.hits.workspaces.is_empty());
+}
+
+#[test]
+fn clicking_the_active_machine_row_neither_collapses_nor_activates() {
+    let (mut state, _) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    let rect = machine_rect(&state, &ClientEndpointId::Local);
+    let outcome = click_at(&mut state, rect.x + 3, rect.y);
+    assert!(outcome.repaint);
+    assert!(outcome.actions.is_empty());
+    assert!(state.collapsed_endpoints.is_empty());
+}
+
+#[test]
+fn clicking_another_machine_row_still_activates_it() {
+    let (mut state, remote_id) = state_with_two_machines();
+    sidebar_rows(&mut state);
+    let rect = machine_rect(&state, &remote_id);
+    let outcome = click_at(&mut state, rect.x + 3, rect.y);
+    assert!(
+        matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::ActivateEndpoint { endpoint_id, .. }] if endpoint_id == &remote_id
+        ),
+        "{:?}",
+        outcome.actions
+    );
+    assert!(state.collapsed_endpoints.is_empty());
+}
+
+#[test]
+fn clicking_a_space_reaches_the_same_action_in_both_layouts() {
+    for nested in [false, true] {
+        let (mut state, _) = state_with_two_machines();
+        state.config.machines_nest_spaces = nested;
+        sidebar_rows(&mut state);
+        let rect = state
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| hit.workspace_id == "ws_1" && hit.endpoint_id == ClientEndpointId::Local)
+            .expect("local space hit")
+            .rect;
+        click_at(&mut state, rect.x + 3, rect.y);
+        let outcome =
+            state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: rect.x + 3,
+                row: rect.y,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        assert!(
+            matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ActivateEndpoint {
+                    endpoint_id: ClientEndpointId::Local,
+                    target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
+                }] if workspace_id == "ws_1"
+            ),
+            "nested {nested}: {:?}",
+            outcome.actions
+        );
+    }
+}
+
+#[test]
+fn nesting_spaces_under_machines_restores_the_legacy_layout() {
+    let (mut state, remote_id) = state_with_two_machines();
+    state.config.machines_nest_spaces = true;
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[0], " ▾ machines");
+    assert!(rows[2].contains("▾ Local"), "{:?}", rows[2]);
+    assert!(rows.iter().any(|row| row.contains("remote-space")));
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.endpoint_id == remote_id));
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|hit| !hit.collapse_toggle.is_empty()));
 }

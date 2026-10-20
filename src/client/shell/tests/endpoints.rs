@@ -511,6 +511,8 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
 #[test]
 fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     let (mut state, _) = state_with_remote();
+    // Only the nested layout renders an inactive machine's spaces.
+    state.config.machines_nest_spaces = true;
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let text = frame
         .cells
@@ -593,6 +595,8 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     }
 
     let (mut state, remote_id) = state_with_remote();
+    // Both machines' worktree groups are asserted at once, which needs the nested layout.
+    state.config.machines_nest_spaces = true;
     let mut local = snapshot();
     add_worktree_group(&mut local, "ws_1", "ws_2");
     state.set_snapshot(Box::new(local));
@@ -820,6 +824,8 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
 fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let (mut state, remote_id) = state_with_remote();
     state.config.spaces.row_gap = 1;
+    // Per-machine space rows exist only in the nested layout.
+    state.config.machines_nest_spaces = true;
 
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
@@ -928,6 +934,8 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
 #[test]
 fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Unfolding a machine row is a nested-layout notion.
+    state.config.machines_nest_spaces = true;
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
@@ -1584,6 +1592,9 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
 fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
     for workspace in [false, true] {
         let (mut state, remote) = state_with_remote();
+        // The machine row cancels a pending switch by re-activating itself, which the nested
+        // layout keeps; the flat layout leaves that row inert.
+        state.config.machines_nest_spaces = true;
         state.compose(100, 28).unwrap();
         let mut pending = ClientShellInput::default();
         assert!(state.activate_endpoint(remote, &mut pending));
@@ -1653,6 +1664,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             ClientEndpointStatus::Reconnecting,
         ] {
             let (mut state, remote_id) = state_with_remote();
+            // The fold arrow belongs to the nested layout.
+            state.config.machines_nest_spaces = true;
             let mut other_profile = remote_profile();
             other_profile.id = ProfileId::parse("1123456789abcdef0123456789abcdef").unwrap();
             let other_id = ClientEndpointId::Ssh(other_profile.id.clone());
@@ -1729,6 +1742,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
 #[test]
 fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
     let (mut state, endpoint_id) = state_with_remote();
+    // An inactive machine's space row only exists in the nested layout.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("combined endpoint frame");
     let remote = state
         .hits
@@ -2431,6 +2446,8 @@ fn focus_agent_index_uses_online_aggregate_rows() {
 #[test]
 fn workspace_drag_rejects_foreign_endpoint_slots() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Dragging onto another machine's slot needs that machine's rows, so nest them.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("aggregate sidebar");
     let local = state
         .hits
