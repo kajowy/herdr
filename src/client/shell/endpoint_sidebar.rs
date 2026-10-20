@@ -326,11 +326,16 @@ pub(super) fn render_expanded(
     } else {
         (state.endpoints.len().min(u16::MAX as usize) as u16).saturating_add(1)
     };
-    // Flat mode adds a blank separator row and the spaces header above the scrollable rows.
+    // The blank row only separates the machine rows from the spaces header, so a folded machines
+    // band drops it and the two headers land on consecutive rows.
+    let spacer_rows = u16::from(!state.machines_section_collapsed);
+    // Flat mode adds that separator row and the spaces header above the scrollable rows.
     let band_rows = if nested {
         WORKSPACE_HEADER_ROWS
     } else {
-        machines_band_rows.saturating_add(2)
+        machines_band_rows
+            .saturating_add(spacer_rows)
+            .saturating_add(1)
     };
     // The folded spaces band keeps its header and the footer below it, and contributes no rows.
     let spaces_collapsed = !nested && state.spaces_section_collapsed;
@@ -346,9 +351,14 @@ pub(super) fn render_expanded(
                 total.saturating_add(*rows)
             })
     };
+    // A folded band has to hand its rows to the agents panel, so fitting the content that stays
+    // visible outranks the dragged ratio until both bands are unfolded again. The ratio itself is
+    // kept, so unfolding restores the dragged proportions.
+    let band_folded =
+        !nested && (state.machines_section_collapsed || state.spaces_section_collapsed);
     let sizing = if nested && state.machines_section_collapsed {
         crate::ui::SidebarSectionSizing::Collapsed
-    } else if state.sidebar_section_split_manual {
+    } else if state.sidebar_section_split_manual && !band_folded {
         crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
     } else {
         crate::ui::SidebarSectionSizing::Fit(content_height)
@@ -392,7 +402,7 @@ pub(super) fn render_expanded(
         let header_y = workspace_area
             .y
             .saturating_add(machines_band_rows)
-            .saturating_add(1);
+            .saturating_add(spacer_rows);
         // The footer owns the last row, so a sidebar too short for both drops the header.
         if header_y < workspace_area.bottom().saturating_sub(1) {
             let marker = if state.spaces_section_collapsed {

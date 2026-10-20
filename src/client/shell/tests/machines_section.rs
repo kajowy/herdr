@@ -241,15 +241,15 @@ fn folding_both_bands_keeps_their_headers_and_the_footer() {
     state.spaces_section_collapsed = true;
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
-    assert_eq!(rows[2], " ▸ spaces · Local");
-    assert!(rows[3].starts_with(" new · Local"), "{:?}", rows[3]);
-    assert_eq!(rows[4], "─".repeat(25));
-    assert!(rows[5].starts_with(" agents"), "{:?}", rows[5]);
+    assert_eq!(rows[1], " ▸ spaces · Local");
+    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[3], "─".repeat(25));
+    assert!(rows[4].starts_with(" agents"), "{:?}", rows[4]);
     assert!(state.hits.machines.is_empty());
     assert!(state.hits.workspaces.is_empty());
-    assert_eq!(state.hits.new_workspace.y, 3);
-    assert_eq!(state.hits.global_launcher.y, 3);
-    assert_eq!(state.hits.sidebar_section_divider.y, 4);
+    assert_eq!(state.hits.new_workspace.y, 2);
+    assert_eq!(state.hits.global_launcher.y, 2);
+    assert_eq!(state.hits.sidebar_section_divider.y, 3);
 }
 
 #[test]
@@ -414,7 +414,7 @@ fn the_collapsed_machines_band_keeps_the_spaces_band_visible() {
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
     assert!(state.hits.machines.is_empty());
-    assert_eq!(rows[2], " ▾ spaces · Local");
+    assert_eq!(rows[1], " ▾ spaces · Local");
     assert!(!state.hits.workspaces.is_empty());
 }
 
@@ -508,4 +508,90 @@ fn nesting_spaces_under_machines_restores_the_legacy_layout() {
         .machines
         .iter()
         .all(|hit| !hit.collapse_toggle.is_empty()));
+}
+
+/// Drag the section divider to `row` so the manual split ratio becomes active.
+fn drag_section_divider(state: &mut ClientShellState, row: u16) {
+    sidebar_rows(state);
+    let divider = state.hits.sidebar_section_divider;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: divider.x + 2,
+        row: divider.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: divider.x + 2,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.sidebar_section_split_manual);
+}
+
+#[test]
+fn folding_both_bands_frees_the_rows_a_dragged_divider_claimed() {
+    let (mut state, _) = state_with_two_machines();
+    drag_section_divider(&mut state, 15);
+    state.machines_section_collapsed = true;
+    state.spaces_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
+    assert_eq!(rows[1], " ▸ spaces · Local");
+    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[3], "─".repeat(25));
+    assert!(rows[4].starts_with(" agents"), "{:?}", rows[4]);
+    assert_eq!(state.hits.sidebar_section_divider.y, 3);
+}
+
+#[test]
+fn folding_only_the_spaces_band_frees_rows_despite_a_dragged_divider() {
+    let (mut state, _) = state_with_two_machines();
+    drag_section_divider(&mut state, 15);
+    state.spaces_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert_eq!(rows[0], " ▾ machines");
+    assert!(rows[1].contains("Local"), "{:?}", rows[1]);
+    assert!(rows[2].contains("hellgate"), "{:?}", rows[2]);
+    assert_eq!(rows[4], " ▸ spaces · Local");
+    assert!(rows[5].starts_with(" new · Local"), "{:?}", rows[5]);
+    assert_eq!(rows[6], "─".repeat(25));
+    assert!(state.hits.workspaces.is_empty());
+    assert_eq!(state.hits.sidebar_section_divider.y, 6);
+}
+
+#[test]
+fn unfolding_both_bands_restores_the_dragged_divider() {
+    let (mut state, _) = state_with_two_machines();
+    drag_section_divider(&mut state, 15);
+    sidebar_rows(&mut state);
+    assert_eq!(state.hits.sidebar_section_divider.y, 15);
+    let ratio = state.sidebar_section_split;
+
+    state.machines_section_collapsed = true;
+    state.spaces_section_collapsed = true;
+    sidebar_rows(&mut state);
+    assert!(state.hits.sidebar_section_divider.y < 15);
+    assert_eq!(state.sidebar_section_split, ratio);
+
+    state.machines_section_collapsed = false;
+    state.spaces_section_collapsed = false;
+    sidebar_rows(&mut state);
+    assert!(state.sidebar_section_split_manual);
+    assert_eq!(state.sidebar_section_split, ratio);
+    assert_eq!(state.hits.sidebar_section_divider.y, 15);
+}
+
+#[test]
+fn the_band_spacer_follows_the_machines_fold() {
+    let (mut state, _) = state_with_two_machines();
+    let rows = sidebar_rows(&mut state);
+    // The spacer separates the machine rows from the spaces header while the band is unfolded.
+    assert_eq!(rows[3], "");
+    assert_eq!(rows[4], " ▾ spaces · Local");
+
+    state.machines_section_collapsed = true;
+    let rows = sidebar_rows(&mut state);
+    assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
+    assert_eq!(rows[1], " ▾ spaces · Local");
 }
