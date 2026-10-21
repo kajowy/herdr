@@ -572,7 +572,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     );
     shell.set_endpoint_catalog(&[profile]);
     shell.set_snapshot(source_snapshot);
-    shell.set_endpoint_status(&target_id, ClientEndpointStatus::Online);
+    shell.set_endpoint_status(&target_id, ClientEndpointStatus::Online, None);
     shell.set_endpoint_snapshot(&target_id, remote_snapshot);
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));

@@ -97,6 +97,9 @@ pub(super) fn render_collapsed(
             hits.machines.push(MachineHit {
                 rect,
                 collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
+                nests_spaces: true,
+                // The narrow rail has no room for a reconnect affordance.
+                reconnect_button: None,
                 endpoint_id: endpoint.endpoint_id.clone(),
             });
             y = y.saturating_add(1);
@@ -244,10 +247,17 @@ pub(super) fn render_expanded(
             entry: WorkspaceEntry,
         },
     }
+    // Flat mode keeps the machines band free of spaces and lists the active machine's spaces in
+    // their own band, so only that machine contributes scrollable rows.
+    let nested = config.machines_nest_spaces;
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        rows.push(Row::Endpoint(endpoint_index));
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+        if nested {
+            rows.push(Row::Endpoint(endpoint_index));
+            if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+                continue;
+            }
+        } else if &endpoint.endpoint_id != state.active_endpoint_id {
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
@@ -310,17 +320,54 @@ pub(super) fn render_expanded(
             _ => 0,
         })
         .collect::<Vec<_>>();
-    // Header, every machine and space row, one free row that keeps the drop slot below the last
-    // space reachable, and the footer that carries the new-workspace and menu affordances.
-    let content_height = row_heights
-        .iter()
-        .chain(gaps.iter())
-        .fold(WORKSPACE_HEADER_ROWS.saturating_add(2), |total, rows| {
-            total.saturating_add(*rows)
-        });
-    let sizing = if state.machines_section_collapsed {
+    // The machines band: its header plus one row per machine while it is unfolded.
+    let machines_band_rows = if nested || state.machines_section_collapsed {
+        1
+    } else {
+        (state.endpoints.len().min(u16::MAX as usize) as u16).saturating_add(1)
+    };
+    // The blank row only separates the machine rows from the spaces header, so a folded machines
+    // band drops it and the two headers land on consecutive rows.
+    let spacer_rows = u16::from(!state.machines_section_collapsed);
+    // Flat mode adds that separator row and the spaces header above the scrollable rows.
+    let band_rows = if nested {
+        WORKSPACE_HEADER_ROWS
+    } else {
+        machines_band_rows
+            .saturating_add(spacer_rows)
+            .saturating_add(1)
+    };
+    // The folded spaces band keeps its header and the footer below it, and contributes no rows.
+    let spaces_collapsed = !nested && state.spaces_section_collapsed;
+    // Band headers, every listed row, one free row that keeps the drop slot below the last space
+    // reachable, and the footer that carries the new-workspace and menu affordances.
+    let content_height = if spaces_collapsed {
+        band_rows.saturating_add(1)
+    } else {
+        row_heights
+            .iter()
+            .chain(gaps.iter())
+            .fold(band_rows.saturating_add(2), |total, rows| {
+                total.saturating_add(*rows)
+            })
+    };
+    // A folded band has to hand its rows to the agents panel, so fitting the content that stays
+    // visible outranks the dragged ratio until both bands are unfolded again. The ratio itself is
+    // kept, so unfolding restores the dragged proportions.
+    let band_folded =
+        !nested && (state.machines_section_collapsed || state.spaces_section_collapsed);
+    // The legacy nested layout folds its one machines band away to a single header row.
+    let nested_folded = nested && state.machines_section_collapsed;
+    let sizing = if state.agents_section_collapsed {
+        // A folded agents panel keeps only its header, so the bands above take every row their
+        // content needs out of the rest, without the share cap a fitted section usually obeys.
+        crate::ui::SidebarSectionSizing::FitOverFolded {
+            content: if nested_folded { 1 } else { content_height },
+            folded_rows: super::agent_sidebar::AGENT_PANEL_HEADER_ROWS,
+        }
+    } else if nested_folded {
         crate::ui::SidebarSectionSizing::Collapsed
-    } else if state.sidebar_section_split_manual {
+    } else if state.sidebar_section_split_manual && !band_folded {
         crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
     } else {
         crate::ui::SidebarSectionSizing::Fit(content_height)
@@ -340,7 +387,7 @@ pub(super) fn render_expanded(
         workspace_area.width,
         u16::from(workspace_area.height > 0),
     );
-    if state.machines_section_collapsed {
+    if nested_folded {
         render_detail_and_toggle(
             buffer,
             area,
@@ -352,13 +399,55 @@ pub(super) fn render_expanded(
         );
         return;
     }
+    if !nested {
+        render_machine_rows(
+            buffer,
+            workspace_area,
+            machines_band_rows,
+            state,
+            palette,
+            hits,
+        );
+        let header_y = workspace_area
+            .y
+            .saturating_add(machines_band_rows)
+            .saturating_add(spacer_rows);
+        // The footer owns the last row, so a sidebar too short for both drops the header.
+        if header_y < workspace_area.bottom().saturating_sub(1) {
+            // The machine label says whose spaces are listed, which a folded band does not list.
+            let header = if state.spaces_section_collapsed {
+                " \u{25b8} spaces".to_owned()
+            } else {
+                format!(" \u{25be} spaces · {}", active_endpoint_label(state))
+            };
+            put_text(
+                buffer,
+                workspace_area.x,
+                header_y,
+                workspace_area.width,
+                &header,
+                Style::default()
+                    .fg(palette.overlay0)
+                    .add_modifier(Modifier::BOLD),
+            );
+            hits.spaces_section_toggle =
+                Rect::new(workspace_area.x, header_y, workspace_area.width, 1);
+        }
+    }
     let body = Rect::new(
         workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
         workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+            .y
+            .saturating_add(band_rows)
+            .min(workspace_area.bottom()),
+        workspace_area.width,
+        if spaces_collapsed {
+            0
+        } else {
+            workspace_area
+                .height
+                .saturating_sub(band_rows.saturating_add(1))
+        },
     );
     hits.workspace_body = body;
     let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
@@ -420,13 +509,14 @@ pub(super) fn render_expanded(
                 let endpoint = &state.endpoints[*index];
                 let rect = Rect::new(body.x, y, content_width, 1);
                 let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-                let marker = if collapsed { "▸" } else { "▾" };
+                let marker = if collapsed { "▸ " } else { "▾ " };
                 render_endpoint_row(
                     buffer,
                     rect,
                     marker,
                     endpoint,
                     collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
+                    state.now,
                     palette,
                 );
                 hits.machines.push(MachineHit {
@@ -437,6 +527,8 @@ pub(super) fn render_expanded(
                         u16::from(rect.width > 1),
                         1,
                     ),
+                    nests_spaces: true,
+                    reconnect_button: reconnect_button_rect(rect, endpoint.status),
                     endpoint_id: endpoint.endpoint_id.clone(),
                 });
                 y = y
@@ -444,6 +536,9 @@ pub(super) fn render_expanded(
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
             Row::Workspace { endpoint, entry } => {
+                if y >= body.bottom() {
+                    break;
+                }
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
@@ -529,21 +624,25 @@ pub(super) fn render_expanded(
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        let label = format!(" new · {}", active_endpoint_label(state));
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
-        put_text(
-            buffer,
-            workspace_area.x,
-            footer_y,
-            workspace_area.width,
-            &label,
-            Style::default().fg(palette.overlay0),
-        );
+        // Creating a space belongs to the spaces band and folds away with it; the menu stays,
+        // because the footer carries the only entry point to it.
+        if !spaces_collapsed {
+            let label = format!(" new · {}", active_endpoint_label(state));
+            hits.new_workspace = Rect::new(
+                workspace_area.x,
+                footer_y,
+                display_width(&label).min(workspace_area.width),
+                u16::from(workspace_area.height > 0),
+            );
+            put_text(
+                buffer,
+                workspace_area.x,
+                footer_y,
+                workspace_area.width,
+                &label,
+                Style::default().fg(palette.overlay0),
+            );
+        }
         let attention = active_snapshot.is_some_and(super::global_menu::global_menu_attention);
         let width = if attention { 8 } else { 6 }.min(workspace_area.width);
         hits.global_launcher = Rect::new(
@@ -573,6 +672,48 @@ pub(super) fn render_expanded(
         state,
         hits,
     );
+}
+
+/// Draw the machines band: one row per machine, with no fold affordance because the band never
+/// nests their spaces. `band_rows` counts the header, so the rows start one row below it.
+fn render_machine_rows(
+    buffer: &mut Buffer,
+    workspace_area: Rect,
+    band_rows: u16,
+    state: &ShellRenderState<'_>,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
+    if band_rows < 2 {
+        return;
+    }
+    let last_row = workspace_area.bottom().saturating_sub(1);
+    for (index, endpoint) in state.endpoints.iter().enumerate() {
+        let y = workspace_area
+            .y
+            .saturating_add(1)
+            .saturating_add(index.min(u16::MAX as usize) as u16);
+        if y >= last_row {
+            break;
+        }
+        let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
+        render_endpoint_row(
+            buffer,
+            rect,
+            "  ",
+            endpoint,
+            &endpoint.endpoint_id == state.active_endpoint_id,
+            state.now,
+            palette,
+        );
+        hits.machines.push(MachineHit {
+            rect,
+            collapse_toggle: Rect::default(),
+            nests_spaces: false,
+            reconnect_button: reconnect_button_rect(rect, endpoint.status),
+            endpoint_id: endpoint.endpoint_id.clone(),
+        });
+    }
 }
 
 /// Draw the agents panel below the machines section plus the sidebar collapse affordance.
@@ -654,12 +795,23 @@ fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
         .map_or("Local", |endpoint| endpoint.label.as_str())
 }
 
+/// The cell at a machine row's right edge that asks its supervisor for an attempt now, for the
+/// statuses that leave the endpoint waiting on one.
+fn reconnect_button_rect(rect: Rect, status: ClientEndpointStatus) -> Option<Rect> {
+    (matches!(
+        status,
+        ClientEndpointStatus::Attention | ClientEndpointStatus::Reconnecting
+    ) && rect.width > 2)
+        .then(|| Rect::new(rect.right().saturating_sub(1), rect.y, 1, 1))
+}
+
 fn render_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
     marker: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
+    now: std::time::Instant,
     palette: &Palette,
 ) {
     if highlighted {
@@ -676,15 +828,25 @@ fn render_endpoint_row(
     } else if state.is_empty() {
         glyph.to_owned()
     } else {
-        format!("{glyph} {state}")
+        match super::endpoints::reconnect_countdown(endpoint.next_attempt_at, now) {
+            Some(countdown) => format!("{glyph} {state} · {countdown}"),
+            None => format!("{glyph} {state}"),
+        }
     };
-    let signal_width = display_width(&signal).min(rect.width);
+    let reconnect = reconnect_button_rect(rect, endpoint.status);
+    let reserved = reconnect.map_or(0, |button| button.width);
+    let signal_area = Rect {
+        width: rect.width.saturating_sub(reserved),
+        ..rect
+    };
+    let signal_width = display_width(&signal).min(signal_area.width);
     put_text(
         buffer,
         rect.x,
         rect.y,
-        rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {}", endpoint.label),
+        rect.width
+            .saturating_sub(signal_width.saturating_add(1).saturating_add(reserved)),
+        &format!(" {marker}{}", endpoint.label),
         Style::default()
             .fg(
                 if matches!(endpoint.status, ClientEndpointStatus::Disabled) {
@@ -695,5 +857,21 @@ fn render_endpoint_row(
             )
             .add_modifier(Modifier::BOLD),
     );
-    put_right_text(buffer, rect, rect.y, &signal, Style::default().fg(color));
+    put_right_text(
+        buffer,
+        signal_area,
+        rect.y,
+        &signal,
+        Style::default().fg(color),
+    );
+    if let Some(button) = reconnect {
+        put_text(
+            buffer,
+            button.x,
+            button.y,
+            button.width,
+            "\u{27f3}",
+            Style::default().fg(color),
+        );
+    }
 }

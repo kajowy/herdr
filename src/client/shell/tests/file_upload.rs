@@ -441,7 +441,11 @@ fn losing_the_active_surface_mid_transfer_fails_the_upload_instead_of_leaving_it
 
     // Take the active endpoint offline: the next send this drives (the following chunk, or the
     // commit once the loop reaches the end) must fail cleanly instead of vanishing silently.
-    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(
+        &ClientEndpointId::Local,
+        ClientEndpointStatus::Reconnecting,
+        None,
+    );
 
     let request_id = request_id(&actions).to_owned();
     let (_, actions) = state.handle_endpoint_result(

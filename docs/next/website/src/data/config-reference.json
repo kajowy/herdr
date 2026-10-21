@@ -866,6 +866,18 @@
           "description": "Fold the sidebar machines section down to its header row, or unfold it again."
         },
         {
+          "key": "keys.toggle_spaces",
+          "type": "keybinding",
+          "default": "\"prefix+shift+s\"",
+          "description": "Fold the sidebar spaces section down to its header row, or unfold it again."
+        },
+        {
+          "key": "keys.toggle_agents",
+          "type": "keybinding",
+          "default": "\"prefix+shift+a\"",
+          "description": "Fold the sidebar agents panel down to its header row, or unfold it again."
+        },
+        {
           "key": "keys.send_files",
           "type": "keybinding",
           "default": "\"prefix+u\"",
@@ -1080,6 +1092,12 @@
             "priority",
             "grouped"
           ]
+        },
+        {
+          "key": "ui.machines_nest_spaces",
+          "type": "boolean",
+          "default": "false",
+          "description": "Nest every machine's spaces under its row in the machines section. The default lists machines only and gives the active machine's spaces their own band below."
         },
         {
           "key": "ui.status_indicators",

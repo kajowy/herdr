@@ -63,7 +63,7 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
@@ -453,8 +453,12 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
         let profile = remote_profile();
         let remote = ClientEndpointId::Ssh(profile.id.clone());
         state.set_endpoint_catalog(&[profile]);
-        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
-        state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+        state.set_endpoint_status(
+            &ClientEndpointId::Local,
+            ClientEndpointStatus::Reconnecting,
+            None,
+        );
+        state.set_endpoint_status(&remote, ClientEndpointStatus::Online, None);
         state.set_endpoint_snapshot(&remote, Box::new(snapshot()));
         assert!(state.snapshot.is_none());
         assert!(state.pane_surface.is_none());
@@ -507,6 +511,8 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
 #[test]
 fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     let (mut state, _) = state_with_remote();
+    // Only the nested layout renders an inactive machine's spaces.
+    state.config.machines_nest_spaces = true;
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let text = frame
         .cells
@@ -589,6 +595,8 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     }
 
     let (mut state, remote_id) = state_with_remote();
+    // Both machines' worktree groups are asserted at once, which needs the nested layout.
+    state.config.machines_nest_spaces = true;
     let mut local = snapshot();
     add_worktree_group(&mut local, "ws_1", "ws_2");
     state.set_snapshot(Box::new(local));
@@ -816,6 +824,8 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
 fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let (mut state, remote_id) = state_with_remote();
     state.config.spaces.row_gap = 1;
+    // Per-machine space rows exist only in the nested layout.
+    state.config.machines_nest_spaces = true;
 
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
@@ -924,6 +934,8 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
 #[test]
 fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Unfolding a machine row is a nested-layout notion.
+    state.config.machines_nest_spaces = true;
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
@@ -986,7 +998,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
@@ -1046,7 +1058,7 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
@@ -1112,7 +1124,7 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agent_view_label = Some("focus".into());
@@ -1182,7 +1194,7 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
@@ -1279,7 +1291,7 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
@@ -1325,7 +1337,7 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agent_view_label = Some("recent".into());
@@ -1456,7 +1468,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
     let mut local = snapshot();
     local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
@@ -1578,8 +1590,11 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
 
 #[test]
 fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
-    for workspace in [false, true] {
+    for (workspace, nest_spaces) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut state, remote) = state_with_remote();
+        // The machine row cancels a pending switch by re-activating itself in either layout.
+        // Only the nested layout carries a workspace row for the machine on display.
+        state.config.machines_nest_spaces = nest_spaces;
         state.compose(100, 28).unwrap();
         let mut pending = ClientShellInput::default();
         assert!(state.activate_endpoint(remote, &mut pending));
@@ -1649,13 +1664,15 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             ClientEndpointStatus::Reconnecting,
         ] {
             let (mut state, remote_id) = state_with_remote();
+            // The fold arrow belongs to the nested layout.
+            state.config.machines_nest_spaces = true;
             let mut other_profile = remote_profile();
             other_profile.id = ProfileId::parse("1123456789abcdef0123456789abcdef").unwrap();
             let other_id = ClientEndpointId::Ssh(other_profile.id.clone());
             state.set_endpoint_catalog(&[remote_profile(), other_profile]);
-            state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
+            state.set_endpoint_status(&other_id, ClientEndpointStatus::Online, None);
             state.set_endpoint_snapshot(&other_id, Box::new(snapshot()));
-            state.set_endpoint_status(&remote_id, status);
+            state.set_endpoint_status(&remote_id, status, None);
             state.sidebar_collapsed = sidebar_collapsed;
 
             for collapsed in [true, false] {
@@ -1725,6 +1742,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
 #[test]
 fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
     let (mut state, endpoint_id) = state_with_remote();
+    // An inactive machine's space row only exists in the nested layout.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("combined endpoint frame");
     let remote = state
         .hits
@@ -1870,7 +1889,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         assert_eq!(state.snapshot.as_ref().unwrap().revision, previous_revision);
         assert_eq!(state.pane_surface.as_ref().unwrap().surface_revision, 9);
 
-        state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+        state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
@@ -1900,7 +1919,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(replacement));
     assert_eq!(state.snapshot.as_deref().unwrap().boot_id, "remote-boot");
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     assert!(state.activate_endpoint_projection(&endpoint_id));
     assert_eq!(
         state.snapshot.as_deref().unwrap().boot_id,
@@ -2319,7 +2338,7 @@ fn cached_offline_navigator_and_mobile_targets_are_dimmed_and_disabled() {
         .as_mut()
         .expect("remote snapshot")
         .agents = vec![agent("remote agent", AgentStatus::Blocked, 2)];
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting, None);
 
     state.open_navigator_overlay();
     let selected = {
@@ -2420,13 +2439,15 @@ fn focus_agent_index_uses_online_aggregate_rows() {
     assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
     assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting, None);
     assert!(!state.indexed_navigation_target_exists(&focus_agent(0)));
 }
 
 #[test]
 fn workspace_drag_rejects_foreign_endpoint_slots() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Dragging onto another machine's slot needs that machine's rows, so nest them.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("aggregate sidebar");
     let local = state
         .hits
@@ -2551,4 +2572,94 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+fn state_with_parked_remote(status: ClientEndpointStatus) -> (ClientShellState, ClientEndpointId) {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, status, None);
+    (state, endpoint_id)
+}
+
+fn click_machine_row(
+    state: &mut ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    reconnect_button: bool,
+) -> ClientShellInput {
+    state.compose(100, 28).expect("combined endpoint frame");
+    let hit = state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == endpoint_id)
+        .expect("remote endpoint hit");
+    let (column, row) = if reconnect_button {
+        let rect = hit.reconnect_button.expect("reconnect button");
+        (rect.x, rect.y)
+    } else {
+        (hit.rect.x + 3, hit.rect.y)
+    };
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+#[test]
+fn clicking_the_reconnect_glyph_requests_a_reconnect_without_mutating_projection() {
+    let (mut state, endpoint_id) = state_with_parked_remote(ClientEndpointStatus::Attention);
+    let outcome = click_machine_row(&mut state, &endpoint_id, true);
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ReconnectEndpoint {
+            endpoint_id: requested,
+        }] if requested == &endpoint_id
+    ));
+    assert!(state.visible_endpoint_notice.is_none());
+    assert!(!state.collapsed_endpoints.contains(&endpoint_id));
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(
+        state
+            .snapshot
+            .as_deref()
+            .map(|snapshot| snapshot.boot_id.as_str()),
+        Some("boot-1")
+    );
+}
+
+#[test]
+fn clicking_a_parked_machine_name_requests_a_reconnect() {
+    for status in [
+        ClientEndpointStatus::Attention,
+        ClientEndpointStatus::Reconnecting,
+    ] {
+        let (mut state, endpoint_id) = state_with_parked_remote(status);
+        let outcome = click_machine_row(&mut state, &endpoint_id, false);
+        assert!(
+            matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ReconnectEndpoint {
+                    endpoint_id: requested,
+                }] if requested == &endpoint_id
+            ),
+            "{status:?}: {:?}",
+            outcome.actions
+        );
+        assert!(state.visible_endpoint_notice.is_none(), "{status:?}");
+    }
+}
+
+#[test]
+fn clicking_a_disabled_machine_name_still_reports_it_unavailable() {
+    let (mut state, endpoint_id) = state_with_parked_remote(ClientEndpointStatus::Disabled);
+    let outcome = click_machine_row(&mut state, &endpoint_id, false);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .map(|notice| notice.body.as_str()),
+        Some("Build is not ready")
+    );
 }

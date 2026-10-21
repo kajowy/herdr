@@ -81,7 +81,7 @@ fn mobile_switcher_can_activate_an_online_saved_machine() {
     };
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
@@ -144,7 +144,7 @@ fn mobile_switcher_can_activate_an_online_saved_machine() {
         }]
     ));
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();

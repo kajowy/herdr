@@ -2008,6 +2008,14 @@ impl ClientShellState {
                     self.toggle_machines_section(outcome);
                     return;
                 }
+                if super::contains(self.hits.spaces_section_toggle, point) {
+                    self.toggle_spaces_section(outcome);
+                    return;
+                }
+                if super::contains(self.hits.agents_section_toggle, point) {
+                    self.toggle_agents_section(outcome);
+                    return;
+                }
                 if self.handle_endpoint_machine_click(point, outcome) {
                     return;
                 }

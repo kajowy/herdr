@@ -39,6 +39,9 @@ pub(crate) enum SidebarSectionSizing {
     Ratio(f32),
     /// The section takes the rows its content needs, within a usable range.
     Fit(u16),
+    /// The bottom section is folded to `folded_rows` header rows, so the top section may use every
+    /// row above that header its `content` needs.
+    FitOverFolded { content: u16, folded_rows: u16 },
     /// Only the section header stays visible.
     Collapsed,
 }
@@ -49,6 +52,20 @@ fn sidebar_section_heights(total_height: u16, sizing: SidebarSectionSizing) -> (
     }
     if sizing == SidebarSectionSizing::Collapsed {
         return (1, total_height.saturating_sub(1));
+    }
+    // A folded bottom section hands its rows back, so the top section is fitted without the usual
+    // share cap and minimum: nothing else can use the rows its content leaves over.
+    if let SidebarSectionSizing::FitOverFolded {
+        content,
+        folded_rows,
+    } = sizing
+    {
+        let workspace_height =
+            content.min(total_height.saturating_sub(folded_rows.min(total_height)));
+        return (
+            workspace_height,
+            total_height.saturating_sub(workspace_height),
+        );
     }
     if total_height < 6 {
         let workspace_height = total_height.div_ceil(2);
@@ -66,7 +83,7 @@ fn sidebar_section_heights(total_height: u16, sizing: SidebarSectionSizing) -> (
             (((total_height as f32) * SIDEBAR_SECTION_FIT_MAX_SHARE).round() as u16)
                 .max(SIDEBAR_SECTION_MIN_ROWS),
         ),
-        SidebarSectionSizing::Collapsed => 1,
+        SidebarSectionSizing::FitOverFolded { .. } | SidebarSectionSizing::Collapsed => 1,
     };
     let workspace_height = workspace_height.clamp(
         SIDEBAR_SECTION_MIN_ROWS,
@@ -364,6 +381,27 @@ mod tests {
     fn fitted_section_keeps_a_usable_minimum() {
         let (machines, _) = expanded_sidebar_sections(SIDEBAR, SidebarSectionSizing::Fit(1));
         assert_eq!(machines.height, 3);
+    }
+
+    #[test]
+    fn a_folded_bottom_section_hands_its_rows_to_a_fitted_top_section() {
+        let sizing = SidebarSectionSizing::FitOverFolded {
+            content: 4,
+            folded_rows: 2,
+        };
+        let (machines, agents) = expanded_sidebar_sections(SIDEBAR, sizing);
+        assert_eq!((machines.height, agents.height), (4, 26));
+        assert_eq!(sidebar_section_divider_rect(SIDEBAR, sizing).y, 4);
+
+        // Content past the folded header's rows is capped there rather than at the usual share.
+        let (machines, agents) = expanded_sidebar_sections(
+            SIDEBAR,
+            SidebarSectionSizing::FitOverFolded {
+                content: 40,
+                folded_rows: 2,
+            },
+        );
+        assert_eq!((machines.height, agents.height), (28, 2));
     }
 
     #[test]
