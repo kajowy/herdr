@@ -414,17 +414,18 @@ pub(super) fn render_expanded(
             .saturating_add(spacer_rows);
         // The footer owns the last row, so a sidebar too short for both drops the header.
         if header_y < workspace_area.bottom().saturating_sub(1) {
-            let marker = if state.spaces_section_collapsed {
-                "\u{25b8}"
+            // The machine label says whose spaces are listed, which a folded band does not list.
+            let header = if state.spaces_section_collapsed {
+                " \u{25b8} spaces".to_owned()
             } else {
-                "\u{25be}"
+                format!(" \u{25be} spaces · {}", active_endpoint_label(state))
             };
             put_text(
                 buffer,
                 workspace_area.x,
                 header_y,
                 workspace_area.width,
-                &format!(" {marker} spaces · {}", active_endpoint_label(state)),
+                &header,
                 Style::default()
                     .fg(palette.overlay0)
                     .add_modifier(Modifier::BOLD),
@@ -623,21 +624,25 @@ pub(super) fn render_expanded(
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        let label = format!(" new · {}", active_endpoint_label(state));
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
-        put_text(
-            buffer,
-            workspace_area.x,
-            footer_y,
-            workspace_area.width,
-            &label,
-            Style::default().fg(palette.overlay0),
-        );
+        // Creating a space belongs to the spaces band and folds away with it; the menu stays,
+        // because the footer carries the only entry point to it.
+        if !spaces_collapsed {
+            let label = format!(" new · {}", active_endpoint_label(state));
+            hits.new_workspace = Rect::new(
+                workspace_area.x,
+                footer_y,
+                display_width(&label).min(workspace_area.width),
+                u16::from(workspace_area.height > 0),
+            );
+            put_text(
+                buffer,
+                workspace_area.x,
+                footer_y,
+                workspace_area.width,
+                &label,
+                Style::default().fg(palette.overlay0),
+            );
+        }
         let attention = active_snapshot.is_some_and(super::global_menu::global_menu_attention);
         let width = if attention { 8 } else { 6 }.min(workspace_area.width);
         hits.global_launcher = Rect::new(

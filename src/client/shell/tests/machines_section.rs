@@ -189,13 +189,14 @@ fn clicking_the_spaces_header_collapses_the_band() {
     let rows = sidebar_rows(&mut state);
     assert_eq!(rows[0], " ▾ machines");
     assert!(rows[1].contains("Local"), "{:?}", rows[1]);
-    assert_eq!(rows[4], " ▸ spaces · Local");
+    assert_eq!(rows[4], " ▸ spaces");
     assert!(state.hits.workspaces.is_empty());
     assert!(!state.hits.machines.is_empty());
     assert!(!state.hits.spaces_section_toggle.is_empty());
-    // The footer keeps the only new-space and menu entry points reachable while the band is folded.
-    assert!(rows[5].starts_with(" new · Local"), "{:?}", rows[5]);
-    assert_eq!(state.hits.new_workspace.y, 5);
+    // The footer keeps the menu reachable while the band is folded; creating a space
+    // folds away with the band that owns it.
+    assert!(rows[5].trim_end().ends_with("menu"), "{:?}", rows[5]);
+    assert!(state.hits.new_workspace.is_empty());
     assert_eq!(state.hits.global_launcher.y, 5);
 }
 
@@ -241,13 +242,13 @@ fn folding_both_bands_keeps_their_headers_and_the_footer() {
     state.spaces_section_collapsed = true;
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
-    assert_eq!(rows[1], " ▸ spaces · Local");
-    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[1], " ▸ spaces");
+    assert!(rows[2].trim_end().ends_with("menu"), "{:?}", rows[2]);
+    assert!(state.hits.new_workspace.is_empty());
     assert_eq!(rows[3], "─".repeat(25));
     assert!(rows[4].starts_with(" ▾ agents"), "{:?}", rows[4]);
     assert!(state.hits.machines.is_empty());
     assert!(state.hits.workspaces.is_empty());
-    assert_eq!(state.hits.new_workspace.y, 2);
     assert_eq!(state.hits.global_launcher.y, 2);
     assert_eq!(state.hits.sidebar_section_divider.y, 3);
 }
@@ -537,8 +538,9 @@ fn folding_both_bands_frees_the_rows_a_dragged_divider_claimed() {
     state.spaces_section_collapsed = true;
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
-    assert_eq!(rows[1], " ▸ spaces · Local");
-    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[1], " ▸ spaces");
+    assert!(rows[2].trim_end().ends_with("menu"), "{:?}", rows[2]);
+    assert!(state.hits.new_workspace.is_empty());
     assert_eq!(rows[3], "─".repeat(25));
     assert!(rows[4].starts_with(" ▾ agents"), "{:?}", rows[4]);
     assert_eq!(state.hits.sidebar_section_divider.y, 3);
@@ -553,8 +555,9 @@ fn folding_only_the_spaces_band_frees_rows_despite_a_dragged_divider() {
     assert_eq!(rows[0], " ▾ machines");
     assert!(rows[1].contains("Local"), "{:?}", rows[1]);
     assert!(rows[2].contains("hellgate"), "{:?}", rows[2]);
-    assert_eq!(rows[4], " ▸ spaces · Local");
-    assert!(rows[5].starts_with(" new · Local"), "{:?}", rows[5]);
+    assert_eq!(rows[4], " ▸ spaces");
+    assert!(rows[5].trim_end().ends_with("menu"), "{:?}", rows[5]);
+    assert!(state.hits.new_workspace.is_empty());
     assert_eq!(rows[6], "─".repeat(25));
     assert!(state.hits.workspaces.is_empty());
     assert_eq!(state.hits.sidebar_section_divider.y, 6);
@@ -679,8 +682,9 @@ fn folding_every_section_leaves_only_the_headers_and_the_footer() {
     state.agents_section_collapsed = true;
     let rows = sidebar_rows(&mut state);
     assert!(rows[0].starts_with(" ▸ machines"), "{:?}", rows[0]);
-    assert_eq!(rows[1], " ▸ spaces · Local");
-    assert!(rows[2].starts_with(" new · Local"), "{:?}", rows[2]);
+    assert_eq!(rows[1], " ▸ spaces");
+    assert!(rows[2].trim_end().ends_with("menu"), "{:?}", rows[2]);
+    assert!(state.hits.new_workspace.is_empty());
     assert_eq!(rows[3], "─".repeat(25));
     assert!(rows[4].starts_with(" ▸ agents"), "{:?}", rows[4]);
     assert_eq!(state.hits.sidebar_section_divider.y, 3);
