@@ -1,3 +1,4 @@
+mod agent_mark;
 mod tokens;
 
 use ratatui::{
@@ -6,6 +7,7 @@ use ratatui::{
     text::Span,
 };
 
+pub(crate) use self::agent_mark::{agent_mark, agent_mark_color};
 pub(crate) use self::tokens::{
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
     ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
@@ -165,6 +167,7 @@ pub(crate) fn resolved_token_spans(
         .iter()
         .map(|token| match &token.kind {
             ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::AgentMark(agent) => display_width(agent_mark(*agent)),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
                     + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
@@ -274,6 +277,13 @@ pub(crate) fn resolved_token_spans(
             ResolvedTokenKind::StateIcon => spans.push(Span::styled(
                 state_icon.0.to_string(),
                 apply_token_style(state_icon.1, token.style),
+            )),
+            ResolvedTokenKind::AgentMark(agent) => spans.push(Span::styled(
+                agent_mark(*agent),
+                apply_token_style(
+                    Style::default().fg(agent_mark_color(*agent, palette)),
+                    token.style,
+                ),
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),

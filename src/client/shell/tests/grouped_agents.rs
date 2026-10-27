@@ -99,11 +99,11 @@ fn grouped_agent_panel_renders_tree_and_hides_spaces_list() {
         &rows[2..8],
         [
             "▾ client-shell (1) ○",
-            "  ○ pi",
+            "  ○ ▲ client-shell",
             "",
             "▾ second (2) ●",
-            "  ● build · pi",
-            "  ● review · pi",
+            "  ● ▲ build",
+            "  ● ▲ review",
         ],
         "rows: {rows:#?}"
     );
@@ -184,7 +184,7 @@ fn clicking_grouped_space_header_toggles_collapse() {
     let rows = sidebar_rows(&mut state);
     assert_eq!(
         &rows[2..4],
-        ["▾ client-shell (1) ○", "  ○ pi"],
+        ["▾ client-shell (1) ○", "  ○ ▲ client-shell"],
         "rows: {rows:#?}"
     );
 }

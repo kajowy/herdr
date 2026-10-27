@@ -465,6 +465,8 @@ pub(super) enum GroupedAgentLineKind {
         pane_id: String,
         status: crate::api::schema::AgentStatus,
         focused: bool,
+        /// Mark of the agent running there, shown instead of its name.
+        mark: Option<crate::detect::Agent>,
         text: String,
     },
 }
@@ -521,40 +523,75 @@ pub(super) fn push_grouped_agent_lines(
         if collapsed {
             continue;
         }
-        lines.extend(members.into_iter().map(|agent| GroupedAgentLine {
-            endpoint_id: source.endpoint_id.clone(),
-            stale: source.stale,
-            kind: GroupedAgentLineKind::Agent {
-                pane_id: agent.pane_id.clone(),
-                status: agent.agent_status,
-                focused: agent.focused && source.active,
-                text: grouped_agent_text(snapshot, agent),
-            },
+        lines.extend(members.into_iter().map(|agent| {
+            let (mark, text) = grouped_agent_label(snapshot, agent);
+            GroupedAgentLine {
+                endpoint_id: source.endpoint_id.clone(),
+                stale: source.stale,
+                kind: GroupedAgentLineKind::Agent {
+                    pane_id: agent.pane_id.clone(),
+                    status: agent.agent_status,
+                    focused: agent.focused && source.active,
+                    mark,
+                    text,
+                },
+            }
         }));
     }
 }
 
-/// `tab · agent · custom state label`, skipping parts that carry no information.
-/// The status word itself is left to the colored indicator.
-fn grouped_agent_text(
+/// A known agent's mark plus `tab · custom state label`, skipping parts that
+/// carry no information. An agent the enum does not know keeps its name in the
+/// text instead of a mark. The status word itself is left to the colored
+/// indicator.
+fn grouped_agent_label(
     snapshot: &ClientShellSnapshot,
     agent: &crate::protocol::ClientShellAgent,
-) -> String {
+) -> (Option<crate::detect::Agent>, String) {
     let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
     let custom_state = agent
         .state_labels
         .iter()
         .find(|(state, _)| state == status_text(agent.agent_status))
         .map(|(_, label)| label.as_str());
-    [
+    let mark = agent
+        .agent
+        .as_deref()
+        .and_then(crate::detect::parse_agent_label);
+    let text = [
         agent_tab_label(snapshot, agent, tab),
-        agent_display_label(agent),
+        mark.is_none().then(|| agent_display_label(agent)).flatten(),
         custom_state,
     ]
     .into_iter()
     .flatten()
     .collect::<Vec<_>>()
-    .join(" · ")
+    .join(" · ");
+    // A mark names nothing on its own, so a line left without text falls back to
+    // the next label the agent has.
+    let Some(known) = mark.filter(|_| text.is_empty()) else {
+        return (mark, text);
+    };
+    let fallback = agent
+        .title
+        .as_deref()
+        .or_else(|| {
+            snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == agent.pane_id)
+                .and_then(|pane| pane.label.as_deref())
+        })
+        .or_else(|| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == agent.workspace_id)
+                .map(|workspace| workspace.label.as_str())
+        })
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| crate::detect::agent_label(known));
+    (mark, fallback.to_owned())
 }
 
 /// Render grouped agent lines into `body`: one blank row separates spaces,
@@ -667,6 +704,7 @@ fn render_grouped_agent_line(
             pane_id,
             status,
             focused,
+            mark,
             text,
         } => {
             let color = status_color(*status, palette);
@@ -675,18 +713,27 @@ fn render_grouped_agent_line(
             } else {
                 Style::default().fg(color).add_modifier(Modifier::DIM)
             };
-            let spans = vec![
+            let mut spans = vec![
                 Span::raw("  "),
                 Span::styled(
                     status_icon(*status, config.status_indicators),
                     Style::default().fg(color),
                 ),
                 Span::raw(" "),
-                Span::styled(
-                    crate::ui::truncate_end(text, width.saturating_sub(4)),
-                    text_style,
-                ),
             ];
+            let mut reserved = 4;
+            if let Some(agent) = mark {
+                spans.push(Span::styled(
+                    crate::ui::agent_mark(*agent),
+                    Style::default().fg(crate::ui::agent_mark_color(*agent, palette)),
+                ));
+                spans.push(Span::raw(" "));
+                reserved += 2;
+            }
+            spans.push(Span::styled(
+                crate::ui::truncate_end(text, width.saturating_sub(reserved)),
+                text_style,
+            ));
             let row_style = if *focused {
                 Style::default().bg(palette.active_row_bg)
             } else {

@@ -17,6 +17,9 @@ fn remote_profile() -> SavedSshEndpoint {
     }
 }
 
+/// Endpoint rows identified by name: these tests tell machines and agents apart
+/// by the rendered name, so they use an agent the enum does not know. A known
+/// agent would render its mark instead and make the rows indistinguishable.
 fn agent(
     name: &str,
     status: crate::api::schema::AgentStatus,
@@ -28,7 +31,7 @@ fn agent(
         tab_id: "tab_1".into(),
         name: Some(name.into()),
         display_agent: None,
-        agent: Some("pi".into()),
+        agent: None,
         title: None,
         terminal_title: None,
         terminal_title_stripped: None,
