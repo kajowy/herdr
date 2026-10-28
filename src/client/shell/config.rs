@@ -57,6 +57,8 @@ impl ClientShellState {
                 .sidebar_collapsed_manual
                 .then_some(self.sidebar_collapsed),
             machines_section_collapsed: self.machines_section_collapsed.then_some(true),
+            spaces_section_collapsed: self.spaces_section_collapsed.then_some(true),
+            agents_section_collapsed: self.agents_section_collapsed.then_some(true),
             agent_panel_sort: self
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
@@ -126,6 +128,7 @@ impl ClientShellConfig {
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
+            machines_nest_spaces: config.ui.machines_nest_spaces,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,
             toast_delay_seconds: config.ui.toast.delay_seconds,
@@ -328,6 +331,7 @@ impl ClientShellConfig {
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;
+                self.machines_nest_spaces = ui.machines_nest_spaces;
                 self.sound_enabled = ui.sound.enabled;
                 self.toast_delivery = ui.toast.delivery;
                 self.toast_delay_seconds = ui.toast.delay_seconds;
@@ -459,6 +463,7 @@ mod tests {
         next.ui.tab_bar_position = TabBarPositionConfig::Bottom;
         next.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
         next.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+        next.ui.machines_nest_spaces = true;
         next.ui.sidebar.agents = toml::from_str("rows = [[{ token = 'machine', rules = [{ equals = 'Local', bold = true }] }]]\nrow_gap = 2").unwrap();
         next.keys.prefix = "ctrl+a".to_owned();
 
@@ -475,6 +480,7 @@ mod tests {
             shell.status_indicators,
             crate::config::StatusIndicatorStyle::Symbols
         );
+        assert!(shell.machines_nest_spaces);
         assert_eq!(shell.agents.row_gap, 2);
         assert_eq!(
             shell.agents.rows[0][0]

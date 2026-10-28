@@ -1601,7 +1601,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
     let remote = SavedSshEndpoint::new("Remote", "dev@example.invalid", "test").unwrap();
     let remote_id = ClientEndpointId::Ssh(remote.id.clone());
     state.set_endpoint_catalog(&[remote]);
-    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online, None);
     state.set_endpoint_snapshot(&remote_id, Box::new(snapshot.clone()));
     state.set_snapshot(Box::new(snapshot));
     state.open_navigator_overlay();

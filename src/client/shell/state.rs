@@ -25,6 +25,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
+    /// Nest each machine's spaces under its row instead of giving the active machine's spaces
+    /// their own band below the machine list.
+    pub(super) machines_nest_spaces: bool,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
@@ -86,6 +89,10 @@ pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     /// Header row that folds the whole machines section away.
     pub(super) machines_section_toggle: Rect,
+    /// Header row that folds the spaces band away in the flat layout.
+    pub(super) spaces_section_toggle: Rect,
+    /// Header row that folds the agents panel away, left of the sort-mode label.
+    pub(super) agents_section_toggle: Rect,
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
@@ -255,6 +262,11 @@ pub(crate) enum ClientShellAction {
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
+    },
+    /// Ask a parked endpoint's supervisor to attempt a connection now instead of waiting for its
+    /// scheduled retry.
+    ReconnectEndpoint {
+        endpoint_id: ClientEndpointId,
     },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
@@ -886,6 +898,8 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) machines_section_collapsed: bool,
+    pub(super) spaces_section_collapsed: bool,
+    pub(super) agents_section_collapsed: bool,
     pub(super) agent_panel_sort_manual: bool,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
@@ -1057,6 +1071,8 @@ impl ClientShellState {
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
             machines_section_collapsed: preferences.machines_section_collapsed.unwrap_or(false),
+            spaces_section_collapsed: preferences.spaces_section_collapsed.unwrap_or(false),
+            agents_section_collapsed: preferences.agents_section_collapsed.unwrap_or(false),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
             last_sidebar_divider_click: None,
             chrome_drag: None,

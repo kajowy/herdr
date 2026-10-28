@@ -100,7 +100,7 @@ fn add_remote(state: &mut ClientShellState) -> ClientEndpointId {
     };
     let remote = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online, None);
     let mut projection = snapshot();
     projection.boot_id = "remote-boot".into();
     state.set_endpoint_snapshot(&remote, Box::new(projection));
@@ -232,7 +232,7 @@ fn disconnect_cancels_worktree_dialog_before_same_server_reconnect() {
         &state.overlay,
         Some(ClientShellOverlay::WorktreeCreate(create)) if !create.creating
     ));
-    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online, None);
     state.set_endpoint_snapshot(&ClientEndpointId::Local, Box::new(snapshot()));
     assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
     state.set_pane_surface(surface());

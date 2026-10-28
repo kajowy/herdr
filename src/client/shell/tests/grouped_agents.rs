@@ -99,11 +99,11 @@ fn grouped_agent_panel_renders_tree_and_hides_spaces_list() {
         &rows[2..8],
         [
             "▾ client-shell (1) ○",
-            "  ○ pi",
+            "  ○ ▲ client-shell",
             "",
             "▾ second (2) ●",
-            "  ● build · pi",
-            "  ● review · pi",
+            "  ● ▲ build",
+            "  ● ▲ review",
         ],
         "rows: {rows:#?}"
     );
@@ -184,7 +184,7 @@ fn clicking_grouped_space_header_toggles_collapse() {
     let rows = sidebar_rows(&mut state);
     assert_eq!(
         &rows[2..4],
-        ["▾ client-shell (1) ○", "  ○ pi"],
+        ["▾ client-shell (1) ○", "  ○ ▲ client-shell"],
         "rows: {rows:#?}"
     );
 }
@@ -225,7 +225,7 @@ fn grouped_mode_across_machines_labels_spaces_with_their_machine() {
     };
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     let mut local = snapshot();
     local.workspaces[0].label = "app".into();
     local.agents = vec![shell_agent("pane_1", "ws_1", "tab_1", AgentStatus::Idle)];
@@ -283,7 +283,7 @@ fn grouped_agent_reveal_scrolls_to_the_agent_line() {
     };
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     state.set_snapshot(Box::new(grouped_snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();

@@ -101,7 +101,7 @@ fn ctrl_hover_pending_request_does_not_block_another_endpoint_with_the_same_boot
     };
     let endpoint = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint, ClientEndpointStatus::Online, None);
     state.set_endpoint_snapshot(&endpoint, Box::new(snapshot()));
     assert!(state.activate_endpoint_projection(&endpoint));
     assert!(

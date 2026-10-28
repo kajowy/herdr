@@ -57,7 +57,9 @@ pub(super) fn render_expanded(
         config,
         hits,
         true,
-    ) {
+        Some(state.agents_section_collapsed),
+    ) || state.agents_section_collapsed
+    {
         return;
     }
     let (endpoints, active_endpoint_id) = (state.endpoints, state.active_endpoint_id);

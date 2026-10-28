@@ -503,8 +503,9 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("× needs input"), "frame: {text}");
-    assert!(text.contains("pi two"), "frame: {text}");
-    assert!(text.contains("waiting for"), "frame: {text}");
+    // The agent token resolves to the harness mark, so the name is gone from the row.
+    assert!(text.contains("▲ waiting for"), "frame: {text}");
+    assert!(!text.contains("pi two"), "frame: {text}");
     assert_eq!(
         state
             .hits
@@ -599,7 +600,8 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
     let row = state.hits.agents.first().expect("agent row hit").0;
     let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
 
-    for (label, needle) in [("tab", "second"), ("agent", "reviewer"), ("separator", "·")] {
+    // The agent row carries the harness mark where it used to carry its name.
+    for (label, needle) in [("tab", "second"), ("agent mark", "▲"), ("separator", "·")] {
         let (x, y) = cell_symbol_position(&frame, row, needle);
         let cell = buffer.cell((x, y)).expect("muted sidebar cell");
         assert!(

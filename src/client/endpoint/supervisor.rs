@@ -68,6 +68,7 @@ struct ReconnectState {
     in_flight: bool,
     generation: Option<u64>,
     online_since: Option<Instant>,
+    last_status: Option<ClientEndpointStatus>,
 }
 
 impl ReconnectState {
@@ -79,6 +80,7 @@ impl ReconnectState {
             in_flight: false,
             generation: None,
             online_since: None,
+            last_status: None,
         }
     }
 }
@@ -217,6 +219,7 @@ impl EndpointSupervisors {
             return false;
         }
         state.in_flight = false;
+        state.last_status = Some(status);
         match status {
             ClientEndpointStatus::Online => {
                 if endpoint_id.is_local() {
@@ -273,6 +276,25 @@ impl EndpointSupervisors {
             now,
             "",
         )
+    }
+
+    /// Force a parked endpoint to attempt reconnecting on the next
+    /// `spawn_due` pass instead of waiting for its scheduled retry.
+    pub(crate) fn request_now(&mut self, endpoint_id: &ClientEndpointId, now: Instant) -> bool {
+        let Some(state) = self.endpoints.get_mut(endpoint_id) else {
+            return false;
+        };
+        if state.in_flight || state.last_status == Some(ClientEndpointStatus::Disabled) {
+            return false;
+        }
+        state.next_attempt = Some(now);
+        state.attempts = 0;
+        true
+    }
+
+    /// The scheduled time of the next automatic attempt, for UI countdowns.
+    pub(crate) fn next_attempt_at(&self, endpoint_id: &ClientEndpointId) -> Option<Instant> {
+        self.endpoints.get(endpoint_id)?.next_attempt
     }
 }
 
@@ -636,5 +658,139 @@ mod tests {
         // reconnect cap so neither drifts back into hammering a locked agent.
         assert!(AGENT_REFUSAL_RETRY_DELAY > MAX_RETRY_DELAY);
         assert!(AGENT_REFUSAL_RETRY_DELAY < ATTENTION_RETRY_DELAY);
+    }
+
+    #[tokio::test]
+    async fn request_now_fires_an_attention_parked_endpoint_immediately() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Attention,
+            now,
+            ""
+        ));
+        assert_eq!(
+            supervisors.endpoints[&endpoint_id].next_attempt,
+            Some(now + ATTENTION_RETRY_DELAY)
+        );
+
+        assert!(supervisors.request_now(&endpoint_id, now));
+        assert_eq!(supervisors.endpoints[&endpoint_id].next_attempt, Some(now));
+
+        let options = test_connect_options();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        supervisors.spawn_due(now, options, &event_tx);
+        assert!(supervisors.endpoints[&endpoint_id].in_flight);
+    }
+
+    #[test]
+    fn request_now_leaves_an_in_flight_attempt_untouched() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        let state = supervisors.endpoints.get_mut(&endpoint_id).unwrap();
+        state.generation = Some(4);
+        state.in_flight = true;
+        state.next_attempt = None;
+
+        assert!(!supervisors.request_now(&endpoint_id, now));
+        assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());
+    }
+
+    #[test]
+    fn request_now_leaves_a_disabled_endpoint_parked() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Disabled,
+            now,
+            ""
+        ));
+
+        assert!(!supervisors.request_now(&endpoint_id, now));
+        assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());
+    }
+
+    #[test]
+    fn request_now_resets_accumulated_backoff() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        for _ in 0..3 {
+            assert!(supervisors.disconnected(&endpoint_id, 4, now));
+        }
+        assert!(supervisors.endpoints[&endpoint_id].attempts > 0);
+
+        assert!(supervisors.request_now(&endpoint_id, now));
+        assert_eq!(supervisors.endpoints[&endpoint_id].attempts, 0);
+    }
+
+    #[test]
+    fn next_attempt_at_reports_the_scheduled_instant_and_none_when_parked() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let endpoint_id = ClientEndpointId::Ssh(profile().id);
+        supervisors
+            .endpoints
+            .get_mut(&endpoint_id)
+            .unwrap()
+            .generation = Some(4);
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Attention,
+            now,
+            ""
+        ));
+        assert_eq!(
+            supervisors.next_attempt_at(&endpoint_id),
+            Some(now + ATTENTION_RETRY_DELAY)
+        );
+
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            4,
+            ClientEndpointStatus::Disabled,
+            now,
+            ""
+        ));
+        assert_eq!(supervisors.next_attempt_at(&endpoint_id), None);
+
+        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now, ""));
+        assert_eq!(supervisors.next_attempt_at(&endpoint_id), None);
+    }
+
+    fn test_connect_options() -> EndpointConnectOptions {
+        EndpointConnectOptions {
+            cols: 80,
+            rows: 24,
+            cell_width_px: 8,
+            cell_height_px: 16,
+            pixel_geometry_exact: false,
+            surface_size: ClientSurfaceSize { cols: 80, rows: 24 },
+            endpoint_keybindings: false,
+            mouse_capture: false,
+        }
     }
 }
