@@ -17,9 +17,6 @@ fn remote_profile() -> SavedSshEndpoint {
     }
 }
 
-/// Endpoint rows identified by name: these tests tell machines and agents apart
-/// by the rendered name, so they use an agent the enum does not know. A known
-/// agent would render its mark instead and make the rows indistinguishable.
 fn agent(
     name: &str,
     status: crate::api::schema::AgentStatus,
@@ -40,6 +37,20 @@ fn agent(
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+    }
+}
+
+/// A row for a detected agent, rendered through the real mark path (the sidebar
+/// shows `agent_mark(detected)` in place of `name` once `agent` is known).
+fn agent_with(
+    name: &str,
+    detected: crate::detect::Agent,
+    status: crate::api::schema::AgentStatus,
+    state_change_seq: u64,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        agent: Some(crate::detect::agent_label(detected).into()),
+        ..agent(name, status, state_change_seq)
     }
 }
 
@@ -1003,13 +1014,26 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Blocked,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1023,8 +1047,14 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("○ Local · local agent"), "frame: {text}");
-    assert!(text.contains("× Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("○ Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("× Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(text.contains("spaces"), "frame: {text}");
     let toggle = state.hits.agent_sort_toggle;
     assert!(!toggle.is_empty());
@@ -1063,10 +1093,18 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
     local.agent_order = vec!["pane_1".into()];
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
 
@@ -1074,7 +1112,12 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("current space".into());
     remote.agent_order = vec!["pane_1".into()];
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let view = current_workspace_view();
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view.clone()));
@@ -1091,8 +1134,14 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(!text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        !text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
@@ -1109,8 +1158,14 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(!text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        !text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1129,22 +1184,39 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_idle_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    let remote_blocked_mark = crate::ui::agent_mark(crate::detect::Agent::Gemini);
+
     let mut local = snapshot();
     local.agent_view_label = Some("focus".into());
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
 
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agents = vec![
-        agent("remote idle", AgentStatus::Idle, 1),
+        agent_with(
+            "remote idle",
+            crate::detect::Agent::Codex,
+            AgentStatus::Idle,
+            1,
+        ),
         ClientShellAgent {
             pane_id: "pane_2".into(),
-            name: Some("remote blocked".into()),
-            agent_status: AgentStatus::Blocked,
             focused: false,
-            ..agent("remote blocked", AgentStatus::Blocked, 2)
+            ..agent_with(
+                "remote blocked",
+                crate::detect::Agent::Gemini,
+                AgentStatus::Blocked,
+                2,
+            )
         },
     ];
     remote.panes.push(ClientShellPane {
@@ -1178,9 +1250,18 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(!text.contains("Build · remote idle"), "frame: {text}");
-    assert!(text.contains("Build · remote blocked"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        !text.contains(&format!("Build · {remote_idle_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_blocked_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1199,15 +1280,28 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("blocked".into());
     remote.agent_order.clear();
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, None);
     state.set_test_endpoint_agent_view(
@@ -1234,8 +1328,14 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(text.contains("spaces"), "frame: {text}");
 }
 
@@ -1296,17 +1396,30 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
     local.agent_order = vec!["pane_1".into()];
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("current space".into());
     remote.agent_order = vec!["pane_1".into()];
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("legacy combined frame");
@@ -1320,8 +1433,14 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1342,14 +1461,27 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+
     let mut local = snapshot();
     local.agent_view_label = Some("recent".into());
-    local.agents = vec![agent("local blocked", AgentStatus::Blocked, 1)];
+    local.agents = vec![agent_with(
+        "local blocked",
+        crate::detect::Agent::Claude,
+        AgentStatus::Blocked,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote idle", AgentStatus::Idle, 9)];
+    remote.agents = vec![agent_with(
+        "remote idle",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        9,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let mut view = current_workspace_view();
@@ -1373,8 +1505,11 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        text.find("Build · remote idle").expect("remote row")
-            < text.find("Local · local blocked").expect("local row"),
+        text.find(&format!("Build · {remote_mark}"))
+            .expect("remote row")
+            < text
+                .find(&format!("Local · {local_mark}"))
+                .expect("local row"),
         "frame: {text}"
     );
 
@@ -1473,17 +1608,37 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
 
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    let local_row = format!("Local · {local_mark}");
+    let remote_row = format!("Build · {remote_mark}");
+
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 2)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        2,
+    )];
     state.set_snapshot(Box::new(local));
     let frame_text = |state: &mut ClientShellState| {
         let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1500,24 +1655,31 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · local agent").expect("local agent")
-            < text.find("Build · remote agent").expect("remote agent")
+        text.find(&local_row).expect("local agent") < text.find(&remote_row).expect("remote agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Working, 2)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Working,
+        2,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find(&remote_row).expect("remote agent") < text.find(&local_row).expect("local agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        3,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find(&remote_row).expect("remote agent") < text.find(&local_row).expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
     assert!(
@@ -1947,8 +2109,13 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    endpoint.snapshot.as_mut().expect("remote snapshot").agents =
-        vec![agent("remote agent", AgentStatus::Blocked, 1)];
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    endpoint.snapshot.as_mut().expect("remote snapshot").agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Blocked,
+        1,
+    )];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
@@ -1974,7 +2141,10 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         Some(ClientEndpointStatus::Reconnecting)
     );
     assert!(text.contains("◐ reconnecting"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(
         text.contains("LIVE"),
         "frozen surface should remain: {text}"
