@@ -1014,9 +1014,11 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     send_pane_shell_command(&remote_api, remote_pane, "printf 'REMOTE_INITIAL_FRAME\\n'");
 
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
+    // This client watches a saved machine's spaces while another machine is active, which only
+    // the nested machines layout lists.
     fs::write(
         config_home.join(app_dir_name()).join("config.toml"),
-        "onboarding = false\n",
+        "onboarding = false\n[ui]\nmachines_nest_spaces = true\n",
     )
     .unwrap();
     let catalog_dir = runtime_dir

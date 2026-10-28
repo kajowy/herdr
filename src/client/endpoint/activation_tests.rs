@@ -96,7 +96,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
     let target = ClientEndpointId::Ssh(profile.id.clone());
     shell.set_endpoint_catalog(&[profile]);
     shell.set_snapshot(Box::new(test_snapshot("local-boot", 1)));
-    shell.set_endpoint_status(&target, ClientEndpointStatus::Online);
+    shell.set_endpoint_status(&target, ClientEndpointStatus::Online, None);
     shell.set_endpoint_snapshot(&target, Box::new(test_snapshot("remote-boot", 1)));
 
     let local_sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

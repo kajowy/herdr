@@ -521,6 +521,7 @@ async fn run_client_loop(
             shell.set_endpoint_status(
                 &endpoint::ClientEndpointId::Local,
                 endpoint::ClientEndpointStatus::Connecting,
+                None,
             );
         }
     }
@@ -1389,8 +1390,9 @@ async fn run_client_loop(
                     if status == endpoint::ClientEndpointStatus::Attention {
                         warn!(endpoint = %endpoint_id.storage_key(), generation, error = %message, "endpoint needs attention");
                     }
+                    let next_attempt_at = supervisors.next_attempt_at(&endpoint_id);
                     let unavailable = state.shell.as_mut().and_then(|shell| {
-                        shell.set_endpoint_status(&endpoint_id, status);
+                        shell.set_endpoint_status(&endpoint_id, status, next_attempt_at);
                         shell.set_machine_diagnostic(&endpoint_id, message.clone());
                         (status == endpoint::ClientEndpointStatus::Attention
                             && shell.endpoint_is_active(&endpoint_id))
@@ -1459,6 +1461,12 @@ async fn run_client_loop(
                     });
                 }
             },
+            ClientLoopEvent::ReconnectEndpoint { endpoint_id } => {
+                if !supervisors.request_now(&endpoint_id, now) {
+                    // An attempt already running, or a disabled machine, is not a user error.
+                    debug!(endpoint = %endpoint_id.storage_key(), "no reconnect attempt to schedule");
+                }
+            }
             ClientLoopEvent::ActivateEndpoint {
                 endpoint_id,
                 target,

@@ -7,7 +7,7 @@ pub(super) fn dispatch_client_shell_actions(
     mut shell: Option<&mut shell::ClientShellState>,
     detached_process_children: &mut Vec<std::process::Child>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
-    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
@@ -62,6 +62,14 @@ pub(super) fn dispatch_client_shell_actions(
                     warn!("could not deliver the uploaded path to the pane");
                 }
             }
+            shell::ClientShellAction::ReconnectEndpoint { endpoint_id } => {
+                if event_tx
+                    .try_send(ClientLoopEvent::ReconnectEndpoint { endpoint_id })
+                    .is_err()
+                {
+                    warn!("could not schedule a reconnect attempt");
+                }
+            }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target,
@@ -89,7 +97,7 @@ pub(super) fn dispatch_client_shell_actions(
                 );
             }
             shell::ClientShellAction::ChooseFiles => {
-                let tx = file_chooser_tx.clone();
+                let tx = event_tx.clone();
                 std::thread::Builder::new()
                     .name("herdr-file-chooser".into())
                     .spawn(move || {
@@ -279,7 +287,7 @@ pub(super) fn begin_endpoint_activation(
     force: bool,
     now: std::time::Instant,
     scheduled_activation: &mut Option<ClientLoopEvent>,
-    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(), ClientError> {
     #[cfg(windows)]
     if target.as_ref().is_some_and(|target| {
@@ -342,7 +350,7 @@ pub(super) fn begin_endpoint_activation(
                 Some(shell),
                 &mut state.detached_process_children,
                 scheduled_activation,
-                file_chooser_tx,
+                event_tx,
             )?;
             if repaint {
                 if let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1) {
@@ -659,12 +667,17 @@ pub(super) fn handle_endpoint_attention(
         }
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
+    let next_attempt_at = supervisors.next_attempt_at(endpoint_id);
     let cancelled = endpoint_commands.disconnect(endpoint_id);
     let unavailable = state.shell.as_mut().and_then(|shell| {
         for request_id in cancelled {
             shell.cancel_endpoint_request(&request_id);
         }
-        shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Attention);
+        shell.set_endpoint_status(
+            endpoint_id,
+            endpoint::ClientEndpointStatus::Attention,
+            next_attempt_at,
+        );
         shell.set_machine_diagnostic(endpoint_id, message.clone());
         endpoint_was_active.then(|| format!("{}: {message}", shell.endpoint_label(endpoint_id)))
     });
@@ -702,7 +715,7 @@ pub(super) fn install_client_shell_snapshot(
                 && shell.has_presented_surface());
         let previous_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
         if !waits_for_selected_surface {
-            shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
+            shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online, None);
         }
         if project_snapshot {
             shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
@@ -756,7 +769,7 @@ pub(super) fn finish_client_shell_input(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     scheduled_activation: &mut Option<ClientLoopEvent>,
-    file_chooser_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
     apply_client_shell_input_source_changes(state, prefix_input_source);
     if outcome.detach {
@@ -796,7 +809,7 @@ pub(super) fn finish_client_shell_input(
         state.shell.as_mut(),
         &mut state.detached_process_children,
         scheduled_activation,
-        file_chooser_tx,
+        event_tx,
     )?;
     let frame = if dispatch_repaint {
         state

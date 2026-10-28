@@ -471,6 +471,10 @@ pub struct KeysConfig {
     pub toggle_sidebar: BindingConfig,
     /// Fold the sidebar machines section to its header. Default: "prefix+m"
     pub toggle_machines: BindingConfig,
+    /// Fold the sidebar spaces section to its header. Default: "prefix+shift+s"
+    pub toggle_spaces: BindingConfig,
+    /// Fold the sidebar agents panel to its header. Default: "prefix+shift+a"
+    pub toggle_agents: BindingConfig,
     /// Send local files to the focused pane's machine. Default: "prefix+u"
     pub send_files: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
@@ -612,6 +616,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_machines: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_spaces: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_agents: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     send_files: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
@@ -726,6 +734,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(toggle_machines);
+        apply_field!(toggle_spaces);
+        apply_field!(toggle_agents);
         apply_field!(send_files);
         apply_field!(indexed);
         apply_field!(command);
@@ -833,6 +843,8 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(toggle_machines, keybinds.toggle_machines);
+        copy_effective_action_field!(toggle_spaces, keybinds.toggle_spaces);
+        copy_effective_action_field!(toggle_agents, keybinds.toggle_agents);
         copy_effective_action_field!(send_files, keybinds.send_files);
         copy_user_field!(indexed);
 
@@ -1026,6 +1038,9 @@ pub struct UiConfig {
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
+    /// Nest every machine's spaces under its row in the machines section. Default: false, which
+    /// lists machines only and gives the active machine's spaces their own band below.
+    pub machines_nest_spaces: bool,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1218,6 +1233,8 @@ impl Default for KeysConfig {
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_machines: BindingConfig::one("prefix+m"),
+            toggle_spaces: BindingConfig::one("prefix+shift+s"),
+            toggle_agents: BindingConfig::one("prefix+shift+a"),
             send_files: BindingConfig::one("prefix+u"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
@@ -1274,6 +1291,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
+            machines_nest_spaces: false,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1525,6 +1543,18 @@ agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+    }
+
+    #[test]
+    fn machines_nest_spaces_defaults_off_and_round_trips() {
+        assert!(!Config::default().ui.machines_nest_spaces);
+
+        let toml = r#"
+[ui]
+machines_nest_spaces = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.ui.machines_nest_spaces);
     }
 
     #[test]

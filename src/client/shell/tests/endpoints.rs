@@ -28,7 +28,7 @@ fn agent(
         tab_id: "tab_1".into(),
         name: Some(name.into()),
         display_agent: None,
-        agent: Some("pi".into()),
+        agent: None,
         title: None,
         terminal_title: None,
         terminal_title_stripped: None,
@@ -37,6 +37,20 @@ fn agent(
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+    }
+}
+
+/// A row for a detected agent, rendered through the real mark path (the sidebar
+/// shows `agent_mark(detected)` in place of `name` once `agent` is known).
+fn agent_with(
+    name: &str,
+    detected: crate::detect::Agent,
+    status: crate::api::schema::AgentStatus,
+    state_change_seq: u64,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        agent: Some(crate::detect::agent_label(detected).into()),
+        ..agent(name, status, state_change_seq)
     }
 }
 
@@ -63,7 +77,7 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
@@ -278,7 +292,7 @@ fn system_notification_clicks_keep_endpoint_and_boot_identity() {
 #[test]
 fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     let (mut state, id) = state_with_remote();
-    state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
+    state.set_endpoint_status(&id, ClientEndpointStatus::Attention, None);
     state.set_machine_diagnostic(&id, "Permission denied (keyboard-interactive)".into());
     for _ in 0..2 {
         state.compose(120, 40).unwrap();
@@ -303,7 +317,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
             .title
             .contains("herdr machine reconnect 0123456789abcdef0123456789abcdef"));
     }
-    state.set_endpoint_status(&id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&id, ClientEndpointStatus::Online, None);
     state.compose(120, 40).unwrap();
     assert!(!state.machine_diagnostics.required_for(
         state
@@ -742,8 +756,12 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
         let profile = remote_profile();
         let remote = ClientEndpointId::Ssh(profile.id.clone());
         state.set_endpoint_catalog(&[profile]);
-        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
-        state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+        state.set_endpoint_status(
+            &ClientEndpointId::Local,
+            ClientEndpointStatus::Reconnecting,
+            None,
+        );
+        state.set_endpoint_status(&remote, ClientEndpointStatus::Online, None);
         state.set_endpoint_snapshot(&remote, Box::new(snapshot()));
         assert!(state.snapshot.is_none());
         assert!(state.pane_surface.is_none());
@@ -796,6 +814,8 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
 #[test]
 fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     let (mut state, _) = state_with_remote();
+    // Only the nested layout renders an inactive machine's spaces.
+    state.config.machines_nest_spaces = true;
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let text = frame
         .cells
@@ -878,6 +898,8 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     }
 
     let (mut state, remote_id) = state_with_remote();
+    // Both machines' worktree groups are asserted at once, which needs the nested layout.
+    state.config.machines_nest_spaces = true;
     let mut local = snapshot();
     add_worktree_group(&mut local, "ws_1", "ws_2");
     state.set_snapshot(Box::new(local));
@@ -1105,6 +1127,8 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
 fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let (mut state, remote_id) = state_with_remote();
     state.config.spaces.row_gap = 1;
+    // Per-machine space rows exist only in the nested layout.
+    state.config.machines_nest_spaces = true;
 
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
@@ -1213,6 +1237,8 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
 #[test]
 fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Unfolding a machine row is a nested-layout notion.
+    state.config.machines_nest_spaces = true;
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
@@ -1275,15 +1301,28 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Blocked,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1297,8 +1336,14 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("○ Local · local agent"), "frame: {text}");
-    assert!(text.contains("× Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("○ Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("× Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(text.contains("spaces"), "frame: {text}");
     let toggle = state.hits.agent_sort_toggle;
     assert!(!toggle.is_empty());
@@ -1335,12 +1380,20 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
 
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
     local.agent_order = vec!["pane_1".into()];
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
 
@@ -1348,7 +1401,12 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("current space".into());
     remote.agent_order = vec!["pane_1".into()];
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let view = current_workspace_view();
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view.clone()));
@@ -1365,8 +1423,14 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(!text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        !text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
@@ -1383,8 +1447,14 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(!text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        !text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1401,24 +1471,41 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_idle_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    let remote_blocked_mark = crate::ui::agent_mark(crate::detect::Agent::Gemini);
 
     let mut local = snapshot();
     local.agent_view_label = Some("focus".into());
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
 
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agents = vec![
-        agent("remote idle", AgentStatus::Idle, 1),
+        agent_with(
+            "remote idle",
+            crate::detect::Agent::Codex,
+            AgentStatus::Idle,
+            1,
+        ),
         ClientShellAgent {
             pane_id: "pane_2".into(),
-            name: Some("remote blocked".into()),
-            agent_status: AgentStatus::Blocked,
             focused: false,
-            ..agent("remote blocked", AgentStatus::Blocked, 2)
+            ..agent_with(
+                "remote blocked",
+                crate::detect::Agent::Gemini,
+                AgentStatus::Blocked,
+                2,
+            )
         },
     ];
     remote.panes.push(ClientShellPane {
@@ -1452,9 +1539,18 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(!text.contains("Build · remote idle"), "frame: {text}");
-    assert!(text.contains("Build · remote blocked"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        !text.contains(&format!("Build · {remote_idle_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_blocked_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1471,17 +1567,30 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("blocked".into());
     remote.agent_order.clear();
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, None);
     state.set_test_endpoint_agent_view(
@@ -1508,8 +1617,14 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(text.contains("spaces"), "frame: {text}");
 }
 
@@ -1568,19 +1683,32 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
 
     let mut local = snapshot();
     local.agent_view_label = Some("current space".into());
     local.agent_order = vec!["pane_1".into()];
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
     remote.agent_view_label = Some("current space".into());
     remote.agent_order = vec!["pane_1".into()];
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("legacy combined frame");
@@ -1594,8 +1722,14 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Local · {local_mark}")),
+        "frame: {text}"
+    );
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
 }
 
 #[test]
@@ -1614,16 +1748,29 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
 
     let mut local = snapshot();
     local.agent_view_label = Some("recent".into());
-    local.agents = vec![agent("local blocked", AgentStatus::Blocked, 1)];
+    local.agents = vec![agent_with(
+        "local blocked",
+        crate::detect::Agent::Claude,
+        AgentStatus::Blocked,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote idle", AgentStatus::Idle, 9)];
+    remote.agents = vec![agent_with(
+        "remote idle",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        9,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let mut view = current_workspace_view();
@@ -1647,8 +1794,11 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        text.find("Build · remote idle").expect("remote row")
-            < text.find("Local · local blocked").expect("local row"),
+        text.find(&format!("Build · {remote_mark}"))
+            .expect("remote row")
+            < text
+                .find(&format!("Local · {local_mark}"))
+                .expect("local row"),
         "frame: {text}"
     );
 
@@ -1745,19 +1895,39 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
+
+    let local_mark = crate::ui::agent_mark(crate::detect::Agent::Claude);
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    let local_row = format!("Local · {local_mark}");
+    let remote_row = format!("Build · {remote_mark}");
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        1,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 2)];
+    local.agents = vec![agent_with(
+        "local agent",
+        crate::detect::Agent::Claude,
+        AgentStatus::Idle,
+        2,
+    )];
     state.set_snapshot(Box::new(local));
     let frame_text = |state: &mut ClientShellState| {
         let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1774,24 +1944,31 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · local agent").expect("local agent")
-            < text.find("Build · remote agent").expect("remote agent")
+        text.find(&local_row).expect("local agent") < text.find(&remote_row).expect("remote agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Working, 2)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Working,
+        2,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find(&remote_row).expect("remote agent") < text.find(&local_row).expect("local agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
+    remote.agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Idle,
+        3,
+    )];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find(&remote_row).expect("remote agent") < text.find(&local_row).expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
     assert!(
@@ -1867,8 +2044,11 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
 
 #[test]
 fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
-    for workspace in [false, true] {
+    for (workspace, nest_spaces) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut state, remote) = state_with_remote();
+        // The machine row cancels a pending switch by re-activating itself in either layout.
+        // Only the nested layout carries a workspace row for the machine on display.
+        state.config.machines_nest_spaces = nest_spaces;
         state.compose(100, 28).unwrap();
         let mut pending = ClientShellInput::default();
         assert!(state.activate_endpoint(remote, &mut pending));
@@ -1938,13 +2118,15 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             ClientEndpointStatus::Reconnecting,
         ] {
             let (mut state, remote_id) = state_with_remote();
+            // The fold arrow belongs to the nested layout.
+            state.config.machines_nest_spaces = true;
             let mut other_profile = remote_profile();
             other_profile.id = ProfileId::parse("1123456789abcdef0123456789abcdef").unwrap();
             let other_id = ClientEndpointId::Ssh(other_profile.id.clone());
             state.set_endpoint_catalog(&[remote_profile(), other_profile]);
-            state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
+            state.set_endpoint_status(&other_id, ClientEndpointStatus::Online, None);
             state.set_endpoint_snapshot(&other_id, Box::new(snapshot()));
-            state.set_endpoint_status(&remote_id, status);
+            state.set_endpoint_status(&remote_id, status, None);
             state.sidebar_collapsed = sidebar_collapsed;
 
             for collapsed in [true, false] {
@@ -2014,6 +2196,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
 #[test]
 fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
     let (mut state, endpoint_id) = state_with_remote();
+    // An inactive machine's space row only exists in the nested layout.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("combined endpoint frame");
     let remote = state
         .hits
@@ -2159,7 +2343,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         assert_eq!(state.snapshot.as_ref().unwrap().revision, previous_revision);
         assert_eq!(state.pane_surface.as_ref().unwrap().surface_revision, 9);
 
-        state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+        state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
@@ -2189,7 +2373,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(replacement));
     assert_eq!(state.snapshot.as_deref().unwrap().boot_id, "remote-boot");
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online, None);
     assert!(state.activate_endpoint_projection(&endpoint_id));
     assert_eq!(
         state.snapshot.as_deref().unwrap().boot_id,
@@ -2214,8 +2398,13 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    endpoint.snapshot.as_mut().expect("remote snapshot").agents =
-        vec![agent("remote agent", AgentStatus::Blocked, 1)];
+    let remote_mark = crate::ui::agent_mark(crate::detect::Agent::Codex);
+    endpoint.snapshot.as_mut().expect("remote snapshot").agents = vec![agent_with(
+        "remote agent",
+        crate::detect::Agent::Codex,
+        AgentStatus::Blocked,
+        1,
+    )];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
@@ -2241,7 +2430,10 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         Some(ClientEndpointStatus::Reconnecting)
     );
     assert!(text.contains("◐ reconnecting"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(
+        text.contains(&format!("Build · {remote_mark}")),
+        "frame: {text}"
+    );
     assert!(
         text.contains("LIVE"),
         "frozen surface should remain: {text}"
@@ -2608,7 +2800,7 @@ fn cached_offline_navigator_and_mobile_targets_are_dimmed_and_disabled() {
         .as_mut()
         .expect("remote snapshot")
         .agents = vec![agent("remote agent", AgentStatus::Blocked, 2)];
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting, None);
 
     state.open_navigator_overlay();
     let selected = {
@@ -2709,13 +2901,15 @@ fn focus_agent_index_uses_online_aggregate_rows() {
     assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
     assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting, None);
     assert!(!state.indexed_navigation_target_exists(&focus_agent(0)));
 }
 
 #[test]
 fn workspace_drag_rejects_foreign_endpoint_slots() {
     let (mut state, endpoint_id) = state_with_remote();
+    // Dragging onto another machine's slot needs that machine's rows, so nest them.
+    state.config.machines_nest_spaces = true;
     state.compose(100, 28).expect("aggregate sidebar");
     let local = state
         .hits
@@ -2840,4 +3034,94 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+fn state_with_parked_remote(status: ClientEndpointStatus) -> (ClientShellState, ClientEndpointId) {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, status, None);
+    (state, endpoint_id)
+}
+
+fn click_machine_row(
+    state: &mut ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    reconnect_button: bool,
+) -> ClientShellInput {
+    state.compose(100, 28).expect("combined endpoint frame");
+    let hit = state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == endpoint_id)
+        .expect("remote endpoint hit");
+    let (column, row) = if reconnect_button {
+        let rect = hit.reconnect_button.expect("reconnect button");
+        (rect.x, rect.y)
+    } else {
+        (hit.rect.x + 3, hit.rect.y)
+    };
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+#[test]
+fn clicking_the_reconnect_glyph_requests_a_reconnect_without_mutating_projection() {
+    let (mut state, endpoint_id) = state_with_parked_remote(ClientEndpointStatus::Attention);
+    let outcome = click_machine_row(&mut state, &endpoint_id, true);
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ReconnectEndpoint {
+            endpoint_id: requested,
+        }] if requested == &endpoint_id
+    ));
+    assert!(state.visible_endpoint_notice.is_none());
+    assert!(!state.collapsed_endpoints.contains(&endpoint_id));
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(
+        state
+            .snapshot
+            .as_deref()
+            .map(|snapshot| snapshot.boot_id.as_str()),
+        Some("boot-1")
+    );
+}
+
+#[test]
+fn clicking_a_parked_machine_name_requests_a_reconnect() {
+    for status in [
+        ClientEndpointStatus::Attention,
+        ClientEndpointStatus::Reconnecting,
+    ] {
+        let (mut state, endpoint_id) = state_with_parked_remote(status);
+        let outcome = click_machine_row(&mut state, &endpoint_id, false);
+        assert!(
+            matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ReconnectEndpoint {
+                    endpoint_id: requested,
+                }] if requested == &endpoint_id
+            ),
+            "{status:?}: {:?}",
+            outcome.actions
+        );
+        assert!(state.visible_endpoint_notice.is_none(), "{status:?}");
+    }
+}
+
+#[test]
+fn clicking_a_disabled_machine_name_still_reports_it_unavailable() {
+    let (mut state, endpoint_id) = state_with_parked_remote(ClientEndpointStatus::Disabled);
+    let outcome = click_machine_row(&mut state, &endpoint_id, false);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .map(|notice| notice.body.as_str()),
+        Some("Build is not ready")
+    );
 }

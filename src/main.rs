@@ -193,6 +193,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
 # toggle_machines = "prefix+m"
+# toggle_spaces = "prefix+shift+s"   # fold the sidebar spaces section to its header
+# toggle_agents = "prefix+shift+a"   # fold the sidebar agents panel to its header
 # send_files = "prefix+u"
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
@@ -342,6 +344,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "grouped" (collapsible tree of agents under each space; hides the spaces list).
 # "workspaces" is accepted as an alias for "spaces".
 # agent_panel_sort = "spaces"
+
+# Nest every machine's spaces under its row in the machines section. The default
+# lists machines only and gives the active machine's spaces their own band below.
+# machines_nest_spaces = false
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses
 # distinct static glyphs for blocked, working, done, idle, and unknown states.

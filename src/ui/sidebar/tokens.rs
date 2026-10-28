@@ -18,9 +18,14 @@ pub(crate) enum ResolvedTokenKind {
     Tab(String),
     Pane(String),
     Agent(String),
+    /// A known agent's one-column mark, standing in for its name.
+    AgentMark(crate::detect::Agent),
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
     Custom(String),
 }
 
@@ -36,7 +41,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } => None,
+            Self::StateIcon | Self::AgentMark(_) | Self::GitStatus { .. } => None,
         }
     }
 }
@@ -69,6 +74,16 @@ pub(crate) fn agent_rows(
     context: AgentTokenContext<'_>,
     state_text: &str,
 ) -> Vec<Vec<ResolvedToken>> {
+    let mut rows = resolve_agent_rows(config, &context, state_text);
+    name_marked_rows(&mut rows, &context);
+    rows
+}
+
+fn resolve_agent_rows(
+    config: &AgentsSidebarConfig,
+    context: &AgentTokenContext<'_>,
+    state_text: &str,
+) -> Vec<Vec<ResolvedToken>> {
     config
         .rows_for_agent(context.canonical_agent)
         .iter()
@@ -94,9 +109,14 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Pane => context
                             .pane
                             .map(|value| ResolvedTokenKind::Pane(value.to_string())),
-                        AgentSidebarToken::Agent => context
-                            .agent_label
-                            .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                        // A known agent shows its mark instead of its name; an
+                        // agent the enum does not know keeps the name.
+                        AgentSidebarToken::Agent => match context.canonical_agent {
+                            Some(agent) => Some(ResolvedTokenKind::AgentMark(agent)),
+                            None => context
+                                .agent_label
+                                .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                        },
                         AgentSidebarToken::TerminalTitle => context
                             .terminal_title
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
@@ -119,6 +139,38 @@ pub(crate) fn agent_rows(
             (!resolved.is_empty()).then_some(resolved)
         })
         .collect()
+}
+
+/// A mark names nothing on its own, so an agent whose rows carry no text at all
+/// gets the next label it has back beside the mark: its pane, its tab, its
+/// space, and failing those the canonical agent name.
+fn name_marked_rows(rows: &mut [Vec<ResolvedToken>], context: &AgentTokenContext<'_>) {
+    if rows
+        .iter()
+        .flatten()
+        .any(|token| token.kind.text_value().is_some())
+    {
+        return;
+    }
+    let Some((row, agent)) = rows.iter_mut().find_map(|row| {
+        let agent = row.iter().find_map(|token| match token.kind {
+            ResolvedTokenKind::AgentMark(agent) => Some(agent),
+            _ => None,
+        })?;
+        Some((row, agent))
+    }) else {
+        return;
+    };
+    let kind = if let Some(pane) = context.pane {
+        ResolvedTokenKind::Pane(pane.to_string())
+    } else if let Some(tab) = context.tab {
+        ResolvedTokenKind::Tab(tab.to_string())
+    } else if !context.workspace.is_empty() {
+        ResolvedTokenKind::Workspace(context.workspace.to_string())
+    } else {
+        ResolvedTokenKind::Agent(crate::detect::agent_label(agent).to_string())
+    };
+    row.push(ResolvedToken::new(kind, SidebarTokenStyle::default()));
 }
 
 pub(crate) struct SpaceTokenContext<'a> {
@@ -178,8 +230,10 @@ pub(crate) fn space_rows(
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
-    if matches!(previous.kind, ResolvedTokenKind::StateIcon)
-        || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
+    if matches!(
+        previous.kind,
+        ResolvedTokenKind::StateIcon | ResolvedTokenKind::AgentMark(_)
+    ) || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
         " "
     } else {
@@ -393,7 +447,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             let config: AgentsSidebarConfig = toml::from_str(&format!(
                 "rows = [[{{ token = 'agent', rules = [{{ equals = 'pi', {first} }}, {{ contains = '', hide = true }}] }}]]"
             )).unwrap();
-            let entry = entry();
+            // Value rules need a text value, so this uses an agent the enum does
+            // not know: a known agent resolves to a mark instead of its name.
+            let mut entry = entry();
+            entry.canonical_agent = None;
             let rows = agent_rows(&config, context(&entry), "working");
             assert_eq!(rows[0][0].kind, ResolvedTokenKind::Agent("pi".into()));
         }
@@ -421,11 +478,14 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             rows[0],
             vec![ResolvedToken::unstyled(ResolvedTokenKind::StateIcon)]
         );
+        // A known agent resolves to its mark, which names nothing on its own, so
+        // the row keeps the space label beside it.
         assert_eq!(
             rows[1],
-            vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
-                "pi".into()
-            ))]
+            vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::AgentMark(crate::detect::Agent::Pi)),
+                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("repo".into())),
+            ]
         );
     }
 
@@ -520,11 +580,14 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         let mut pi = entry();
         pi.agent_label = Some("renamed pi".into());
 
+        // The override's agent token resolves to the mark, which names nothing on
+        // its own, so the row keeps the space label beside it.
         assert_eq!(
             agent_rows(&config, context(&pi), "working"),
-            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
-                "renamed pi".into()
-            ))]]
+            vec![vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::AgentMark(crate::detect::Agent::Pi)),
+                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("repo".into())),
+            ]]
         );
 
         pi.canonical_agent = None;

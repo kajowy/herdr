@@ -245,11 +245,15 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) machines_section_collapsed: bool,
+    pub(super) spaces_section_collapsed: bool,
+    pub(super) agents_section_collapsed: bool,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// The frame's reference time, so render stays pure and every row of one frame agrees.
+    pub(super) now: std::time::Instant,
 }
 
 pub(super) fn render_shell(
@@ -332,6 +336,8 @@ pub(super) fn render_shell(
         hits.new_workspace = Rect::default();
         hits.machines.clear();
         hits.machines_section_toggle = Rect::default();
+        hits.spaces_section_toggle = Rect::default();
+        hits.agents_section_toggle = Rect::default();
         hits.workspaces.clear();
         hits.agents.clear();
         hits.endpoint_agents.clear();

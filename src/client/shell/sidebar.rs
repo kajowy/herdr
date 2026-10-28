@@ -218,30 +218,7 @@ pub(crate) fn render_sidebar(
         render_sidebar_collapse_toggle(buffer, area, palette, hits);
         return;
     }
-    let sizing = crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split);
-    let (workspace_area, detail_area) = crate::ui::expanded_sidebar_sections(area, sizing);
-    hits.sidebar_section_divider = crate::ui::sidebar_section_divider_rect(area, sizing);
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        " spaces",
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
-
     let entries = workspace_entries(snapshot, state.collapsed_groups);
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
-    hits.workspace_body = body;
     let row_heights = entries
         .iter()
         .map(|entry| {
@@ -271,6 +248,45 @@ pub(crate) fn render_sidebar(
                 .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
         })
         .collect::<Vec<_>>();
+    // The spaces header, every listed row, one free row that keeps the drop slot below the last
+    // space reachable, and the footer that carries the new-space and menu affordances.
+    let content_height = row_heights
+        .iter()
+        .chain(gaps.iter())
+        .fold(WORKSPACE_HEADER_ROWS.saturating_add(2), |total, rows| {
+            total.saturating_add(*rows)
+        });
+    // A folded agents panel keeps only its header, so the spaces list takes every other row it
+    // needs; the dragged ratio is kept and applies again once the panel is unfolded.
+    let sizing = if state.agents_section_collapsed {
+        crate::ui::SidebarSectionSizing::FitOverFolded {
+            content: content_height,
+            folded_rows: super::agent_sidebar::AGENT_PANEL_HEADER_ROWS,
+        }
+    } else {
+        crate::ui::SidebarSectionSizing::Ratio(state.sidebar_section_split)
+    };
+    let (workspace_area, detail_area) = crate::ui::expanded_sidebar_sections(area, sizing);
+    hits.sidebar_section_divider = crate::ui::sidebar_section_divider_rect(area, sizing);
+    put_text(
+        buffer,
+        workspace_area.x,
+        workspace_area.y,
+        workspace_area.width,
+        " spaces",
+        Style::default()
+            .fg(palette.overlay0)
+            .add_modifier(Modifier::BOLD),
+    );
+    let body = Rect::new(
+        workspace_area.x,
+        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+        workspace_area.width,
+        workspace_area
+            .height
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+    );
+    hits.workspace_body = body;
     let mut metrics = super::scroll::list_scroll_metrics(
         &row_heights,
         &gaps,
@@ -398,6 +414,7 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         state.agent_scroll,
+        state.agents_section_collapsed,
         hits,
     );
     render_sidebar_collapse_toggle(buffer, area, palette, hits);
@@ -423,7 +440,11 @@ fn render_grouped_agent_sidebar(
         render_space_actions(buffer, content, content.y, snapshot, config, hits);
     }
     let view_label = snapshot.agent_view_label.as_deref();
-    if !agent_sidebar::render_agent_panel_header(buffer, content, view_label, config, hits, false) {
+    // The agent tree is the whole sidebar here, so there is no section above to take its rows and
+    // the header carries no fold affordance.
+    if !agent_sidebar::render_agent_panel_header(
+        buffer, content, view_label, config, hits, false, None,
+    ) {
         return;
     }
     let agents = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)

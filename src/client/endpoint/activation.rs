@@ -961,7 +961,7 @@ impl PendingEndpointActivation {
             self.geometry(),
         )?;
         endpoints.set_surface_active(&lease.endpoint_id, true);
-        shell.set_endpoint_status(&lease.endpoint_id, ClientEndpointStatus::Online);
+        shell.set_endpoint_status(&lease.endpoint_id, ClientEndpointStatus::Online, None);
         if !shell.endpoint_projection_available(&lease.endpoint_id)
             || !endpoints.set_active(&lease.endpoint_id)
         {

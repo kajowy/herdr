@@ -50,6 +50,37 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
     }
 
+    /// Fold the spaces band down to its header, or unfold it again. The legacy nested layout has
+    /// no separate spaces band, so the toggle does nothing there.
+    pub(super) fn toggle_spaces_section(&mut self, outcome: &mut ClientShellInput) {
+        if self.config.machines_nest_spaces {
+            return;
+        }
+        self.spaces_section_collapsed = !self.spaces_section_collapsed;
+        self.workspace_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
+    /// Fold the agents panel down to its header, or unfold it again. The single-machine grouped
+    /// sidebar is the agent tree itself, so it has no section above to take the freed rows and the
+    /// toggle does nothing there.
+    pub(super) fn toggle_agents_section(&mut self, outcome: &mut ClientShellInput) {
+        if !self.agents_section_can_fold() {
+            return;
+        }
+        self.agents_section_collapsed = !self.agents_section_collapsed;
+        self.agent_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
+    /// Whether the agents panel sits below a section that can take its rows when it folds.
+    pub(super) fn agents_section_can_fold(&self) -> bool {
+        self.endpoints.len() > 1
+            || self.config.agent_panel_sort != crate::config::AgentPanelSortConfig::Grouped
+    }
+
     pub(super) fn handle_endpoint_machine_click(
         &mut self,
         point: (u16, u16),
@@ -64,8 +95,16 @@ impl ClientShellState {
             return false;
         };
         let endpoint_id = hit.endpoint_id.clone();
+        let nests_spaces = hit.nests_spaces;
         let collapse_toggle = super::contains(hit.collapse_toggle, point);
-        if collapse_toggle || endpoint_id == self.active_endpoint_id {
+        let reconnect_button = hit
+            .reconnect_button
+            .is_some_and(|button| super::contains(button, point));
+        if reconnect_button {
+            outcome
+                .actions
+                .push(ClientShellAction::ReconnectEndpoint { endpoint_id });
+        } else if nests_spaces && (collapse_toggle || endpoint_id == self.active_endpoint_id) {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
@@ -73,12 +112,29 @@ impl ClientShellState {
             if !collapse_toggle && endpoint_id.is_local() {
                 self.activate_endpoint(endpoint_id, outcome);
             }
+        } else if endpoint_id == self.active_endpoint_id {
+            // A row that nests no spaces has nothing to fold, but re-activating the machine on
+            // display still cancels a switch that is waiting on another one.
+            outcome.repaint = true;
+            if endpoint_id.is_local() {
+                self.activate_endpoint(endpoint_id, outcome);
+            }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target: None,
             });
+        } else if matches!(
+            self.endpoint_status(&endpoint_id),
+            Some(ClientEndpointStatus::Attention | ClientEndpointStatus::Reconnecting)
+        ) {
+            // A parked machine has no connection to select, so the name offers the only thing
+            // that can help: another attempt now.
+            outcome
+                .actions
+                .push(ClientShellAction::ReconnectEndpoint { endpoint_id });
         } else {
+            // A disabled machine has to be enabled first, which is a CLI operation today.
             let label = self.endpoint_label(&endpoint_id).to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));
             outcome.repaint = true;
