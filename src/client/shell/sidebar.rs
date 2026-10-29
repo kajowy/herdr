@@ -336,7 +336,10 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        if selected {
+        // A tab held over this space owns its background until the drop resolves.
+        if state.tab_drop_workspace_id == Some(workspace.workspace_id.as_str()) {
+            buffer.set_style(rect, Style::default().bg(palette.surface1));
+        } else if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));

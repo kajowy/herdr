@@ -248,6 +248,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) spaces_section_collapsed: bool,
     pub(super) agents_section_collapsed: bool,
     pub(super) tab_drag_insert_index: Option<usize>,
+    /// Space row a tab drag would relocate its tab to.
+    pub(super) tab_drop_workspace_id: Option<&'a str>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,

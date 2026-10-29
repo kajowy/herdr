@@ -72,7 +72,7 @@ fn current_workspace_view() -> crate::api::schema::AgentViewSetParams {
     }
 }
 
-fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
+pub(super) fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());

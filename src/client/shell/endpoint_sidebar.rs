@@ -590,6 +590,12 @@ pub(super) fn render_expanded(
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
+                // A tab can only be relocated within the machine on display.
+                if endpoint_active
+                    && state.tab_drop_workspace_id == Some(workspace.workspace_id.as_str())
+                {
+                    buffer.set_style(rect, Style::default().bg(palette.surface1));
+                }
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,

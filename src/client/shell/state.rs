@@ -222,6 +222,9 @@ pub(super) enum ClientChromeDrag {
         tab_id: String,
         workspace_id: String,
         insert_index: Option<usize>,
+        /// Space row under the pointer once the drag left the tab bar. It relocates the tab
+        /// to another space instead of reordering it in place.
+        workspace_target: Option<String>,
     },
     Workspace {
         source_workspace_id: String,
@@ -597,6 +600,9 @@ pub(super) struct ClientTabCloseConfirmation {
     pub(super) pane_id: Option<String>,
     pub(super) tab_id: String,
     pub(super) workspace: WorkspaceNavigationTarget,
+    /// Space the confirmed tab moves to, when the confirmation came from a relocation that
+    /// would close the space the tab leaves behind.
+    pub(super) relocate_to_workspace_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -673,6 +679,13 @@ pub(super) enum PendingEndpointKind {
     WorktreeOpen,
     WorktreeRemove {
         forced: bool,
+    },
+    TabRelocate {
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+        /// Whether the user already answered a server confirmation for this move.
+        confirmed: bool,
     },
     SelectionCopy,
     PaneScroll {

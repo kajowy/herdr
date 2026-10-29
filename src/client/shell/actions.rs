@@ -847,6 +847,23 @@ impl ClientShellState {
                 };
                 return (repaint, Vec::new());
             }
+            PendingEndpointKind::TabRelocate {
+                tab_id,
+                source_workspace_id,
+                target_workspace_id,
+                confirmed,
+            } => {
+                return (
+                    self.complete_tab_relocate(
+                        tab_id,
+                        source_workspace_id,
+                        target_workspace_id,
+                        confirmed,
+                        result,
+                    ),
+                    Vec::new(),
+                );
+            }
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
@@ -872,6 +889,191 @@ impl ClientShellState {
             Err(_) => true,
         };
         (repaint, Vec::new())
+    }
+
+    /// Move a whole tab to another space of the machine on display.
+    pub(super) fn request_tab_relocate(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+        confirmed: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        let resolved = self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .tabs
+                .iter()
+                .any(|tab| tab.tab_id == tab_id && tab.workspace_id == source_workspace_id)
+                && snapshot
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.workspace_id == target_workspace_id)
+        });
+        if !resolved {
+            return;
+        }
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::TabRelocate(crate::api::schema::TabRelocateParams {
+                tab_id: tab_id.clone(),
+                workspace_id: target_workspace_id.clone(),
+                insert_index: None,
+                focus: true,
+            }),
+            PendingEndpointKind::TabRelocate {
+                tab_id,
+                source_workspace_id,
+                target_workspace_id,
+                confirmed,
+            },
+            outcome,
+        );
+    }
+
+    fn complete_tab_relocate(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+        confirmed: bool,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        match result {
+            Ok(crate::api::schema::ResponseResult::TabRelocated {
+                tab,
+                tabs,
+                insert_index,
+                closed_workspace_id,
+            }) => self.apply_tab_relocated(&tab_id, tab, &tabs, insert_index, closed_workspace_id),
+            Ok(_) => {
+                self.set_endpoint_error("endpoint returned an unexpected tab relocate result");
+                true
+            }
+            Err(error) if error.code.as_deref() == Some("confirmation_required") => {
+                // An answered confirmation must not ask again, and a source space that has
+                // already gone has nothing left to confirm; both owe the user the refusal.
+                if confirmed
+                    || !self.open_tab_relocate_confirmation(
+                        tab_id,
+                        source_workspace_id,
+                        target_workspace_id,
+                    )
+                {
+                    self.push_endpoint_notice(
+                        ClientEndpointNoticeKind::Rejected,
+                        "tab.relocate:confirmation_required",
+                        "Action rejected",
+                        error.message,
+                    );
+                }
+                true
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Fold a finished relocation into the local projection. The moved tab's public id and the
+    /// ids of the tabs it displaces all change, so the target space takes the authoritative
+    /// list the server returned; an emptied source space leaves the sidebar with it.
+    fn apply_tab_relocated(
+        &mut self,
+        source_tab_id: &str,
+        tab: crate::api::schema::TabInfo,
+        tabs: &[crate::api::schema::TabInfo],
+        insert_index: usize,
+        closed_workspace_id: Option<String>,
+    ) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref_mut() else {
+            return false;
+        };
+        if let Some(position) = snapshot
+            .tabs
+            .iter()
+            .position(|entry| entry.tab_id == source_tab_id)
+        {
+            let mut moved = snapshot.tabs.remove(position);
+            moved.workspace_id = tab.workspace_id.clone();
+            let landing = snapshot
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.workspace_id == tab.workspace_id)
+                .map(|(index, _)| index)
+                .nth(insert_index)
+                .unwrap_or(snapshot.tabs.len());
+            snapshot.tabs.insert(landing, moved);
+            let renames = snapshot
+                .tabs
+                .iter()
+                .filter(|entry| entry.workspace_id == tab.workspace_id)
+                .zip(tabs)
+                .filter(|(entry, info)| entry.tab_id != info.tab_id)
+                .map(|(entry, info)| (entry.tab_id.clone(), info.tab_id.clone()))
+                .collect::<Vec<_>>();
+            for pane in &mut snapshot.panes {
+                if pane.tab_id == source_tab_id {
+                    pane.workspace_id = tab.workspace_id.clone();
+                }
+                if let Some((_, renamed)) = renames.iter().find(|(old, _)| *old == pane.tab_id) {
+                    pane.tab_id = renamed.clone();
+                }
+            }
+            for agent in &mut snapshot.agents {
+                if agent.tab_id == source_tab_id {
+                    agent.workspace_id = tab.workspace_id.clone();
+                }
+                if let Some((_, renamed)) = renames.iter().find(|(old, _)| *old == agent.tab_id) {
+                    agent.tab_id = renamed.clone();
+                }
+            }
+            for (entry, info) in snapshot
+                .tabs
+                .iter_mut()
+                .filter(|entry| entry.workspace_id == tab.workspace_id)
+                .zip(tabs)
+            {
+                entry.tab_id = info.tab_id.clone();
+                entry.number = info.number;
+                entry.focused = info.focused;
+                entry.agent_status = info.agent_status;
+            }
+        }
+        if tab.focused {
+            snapshot.focused_workspace_id = Some(tab.workspace_id.clone());
+            snapshot.focused_tab_id = Some(tab.tab_id.clone());
+            for workspace in &mut snapshot.workspaces {
+                workspace.focused = workspace.workspace_id == tab.workspace_id;
+                if workspace.focused {
+                    workspace.active_tab_id = tab.tab_id.clone();
+                }
+            }
+        }
+        if let Some(closed) = closed_workspace_id.as_deref() {
+            snapshot
+                .workspaces
+                .retain(|workspace| workspace.workspace_id != closed);
+            snapshot.tabs.retain(|entry| entry.workspace_id != closed);
+            snapshot.panes.retain(|pane| pane.workspace_id != closed);
+            snapshot.agents.retain(|agent| agent.workspace_id != closed);
+            let active_endpoint_id = self.active_endpoint_id.clone();
+            if self
+                .navigate_workspace_id
+                .as_ref()
+                .is_some_and(|target| target.matches(&active_endpoint_id, closed))
+            {
+                self.navigate_workspace_id = None;
+            }
+            if self
+                .pending_workspace_highlight
+                .as_ref()
+                .is_some_and(|pending| pending.target.matches(&active_endpoint_id, closed))
+            {
+                self.pending_workspace_highlight = None;
+            }
+        }
+        self.reveal_workspace(&tab.workspace_id);
+        self.reveal_focused_tab = true;
+        true
     }
 
     pub(super) fn endpoint_method_for_action(

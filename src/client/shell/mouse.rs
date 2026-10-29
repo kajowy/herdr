@@ -508,6 +508,30 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
+    /// Where a tab drag would land: an insert position inside the tab bar, or another space of
+    /// the machine on display. A space row wins, so the in-bar indicator steps aside, and a
+    /// foreign machine's row is no target at all.
+    fn tab_drop_targets_at(
+        &self,
+        point: (u16, u16),
+        source_workspace_id: &str,
+    ) -> (Option<usize>, Option<String>) {
+        let workspace_target = self
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| super::contains(hit.rect, point))
+            .filter(|hit| {
+                hit.endpoint_id == self.active_endpoint_id
+                    && hit.workspace_id != source_workspace_id
+            })
+            .map(|hit| hit.workspace_id.clone());
+        if workspace_target.is_some() {
+            return (None, workspace_target);
+        }
+        (self.tab_drop_index_at(point), None)
+    }
+
     fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
@@ -1192,14 +1216,17 @@ impl ClientShellState {
                     }
                     return;
                 }
-                Some(ClientChromeDrag::Tab { .. }) => {
-                    let insert_index = self.tab_drop_index_at(point);
+                Some(ClientChromeDrag::Tab { workspace_id, .. }) => {
+                    let (insert_index, workspace_target) =
+                        self.tab_drop_targets_at(point, &workspace_id.clone());
                     if let Some(ClientChromeDrag::Tab {
                         insert_index: current,
+                        workspace_target: current_workspace,
                         ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = insert_index;
+                        *current_workspace = workspace_target;
                     }
                     outcome.repaint = true;
                     return;
@@ -1243,11 +1270,15 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
-                    if let Some(insert_index) = self.tab_drop_index_at(point) {
+                    let (tab_id, workspace_id) = (press.tab_id.clone(), press.workspace_id.clone());
+                    let (insert_index, workspace_target) =
+                        self.tab_drop_targets_at(point, &workspace_id);
+                    if insert_index.is_some() || workspace_target.is_some() {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
-                            tab_id: press.tab_id.clone(),
-                            workspace_id: press.workspace_id.clone(),
-                            insert_index: Some(insert_index),
+                            tab_id,
+                            workspace_id,
+                            insert_index,
+                            workspace_target,
                         });
                         outcome.repaint = true;
                     }
@@ -1265,7 +1296,19 @@ impl ClientShellState {
                         workspace_id,
                         ..
                     } => {
-                        let insert_index = self.tab_drop_index_at(point);
+                        let (insert_index, workspace_target) =
+                            self.tab_drop_targets_at(point, &workspace_id);
+                        if let Some(target_workspace_id) = workspace_target {
+                            self.request_tab_relocate(
+                                tab_id,
+                                workspace_id,
+                                target_workspace_id,
+                                false,
+                                outcome,
+                            );
+                            outcome.repaint = true;
+                            return;
+                        }
                         let valid_drop = self.snapshot.as_deref().is_some_and(|snapshot| {
                             snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
                                 && snapshot.tabs.iter().any(|tab| {
