@@ -684,8 +684,6 @@ pub(super) enum PendingEndpointKind {
         tab_id: String,
         source_workspace_id: String,
         target_workspace_id: String,
-        /// Whether the user already answered a server confirmation for this move.
-        confirmed: bool,
     },
     SelectionCopy,
     PaneScroll {

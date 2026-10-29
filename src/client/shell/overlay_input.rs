@@ -1244,6 +1244,7 @@ impl ClientShellState {
             })
             .unwrap_or_else(|| vec![workspace]);
         let closes_group = group.len() > 1;
+        let relocating = relocate_to.is_some();
         // Keep parent-group tab closes on the existing server confirmation path. A relocation
         // arrives here from that very path, so it keeps its confirmation.
         if tab_id.is_some() && closes_group && relocate_to.is_none() {
@@ -1288,12 +1289,18 @@ impl ClientShellState {
                 workspace_id,
                 close_group: closes_group,
                 tab_target,
-                title: if closes_group {
+                title: if relocating {
+                    "Move tab and close workspace?".to_owned()
+                } else if closes_group {
                     "Close worktree group?".to_owned()
                 } else {
                     "Close workspace?".to_owned()
                 },
-                detail: format!("{} — {scope}", workspace.label),
+                detail: if relocating {
+                    format!("{} — moving this tab empties it", workspace.label)
+                } else {
+                    format!("{} — {scope}", workspace.label)
+                },
             },
         ));
         true

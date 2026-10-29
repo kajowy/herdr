@@ -220,6 +220,7 @@ impl App {
             workspace_id,
             insert_index,
             focus,
+            confirm_source_close,
         } = params;
         let Some((source_ws_idx, source_tab_idx)) = self.parse_tab_id(&tab_id) else {
             return tab_not_found(id, &tab_id);
@@ -228,7 +229,9 @@ impl App {
             return workspace_not_found(id, &workspace_id);
         };
         // Relocating the last tab out of a workspace closes it, so it has to
-        // clear the same guards `tab.close` clears before closing one.
+        // clear the same guards `tab.close` clears before closing one. Unlike a
+        // close it removes only that workspace, so the owner's confirmation lets
+        // it through and the rest of the worktree group keeps running.
         let closes_source_workspace = source_ws_idx != target_ws_idx
             && self
                 .state
@@ -242,14 +245,15 @@ impl App {
             ) {
                 return response;
             }
-            if self
-                .state
-                .confirm_implicit_worktree_group_close(source_ws_idx)
+            if !confirm_source_close
+                && self
+                    .state
+                    .confirm_implicit_worktree_group_close(source_ws_idx)
             {
                 return encode_error(
                     id,
                     "confirmation_required",
-                    "relocating this tab would close a worktree group",
+                    "relocating this tab closes the workspace it leaves behind",
                 );
             }
         }
@@ -622,6 +626,7 @@ mod tests {
             workspace_id: workspace_id.into(),
             insert_index: None,
             focus: false,
+            confirm_source_close: false,
         }
     }
 
@@ -843,40 +848,137 @@ mod tests {
         )));
     }
 
-    #[test]
-    fn api_tab_relocate_requires_confirmation_before_closing_a_worktree_group() {
-        let event_hub = crate::api::EventHub::default();
-        let mut app = relocate_test_app(&event_hub);
+    fn worktree_space(
+        checkout_path: &str,
+        is_linked_worktree: bool,
+    ) -> crate::workspace::WorktreeSpaceMembership {
+        crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: checkout_path.into(),
+            is_linked_worktree,
+        }
+    }
+
+    /// A worktree group whose parent holds a single tab, next to an unrelated
+    /// workspace the tab can move to.
+    fn worktree_group_fixture(event_hub: &crate::api::EventHub) -> App {
+        let mut app = relocate_test_app(event_hub);
         let mut parent = Workspace::test_new("parent");
-        parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
+        parent.worktree_space = Some(worktree_space("/repo/herdr", false));
         let mut child = Workspace::test_new("child");
-        child.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-child".into(),
-            is_linked_worktree: true,
-        });
-        app.state.workspaces = vec![parent, child];
+        child.worktree_space = Some(worktree_space("/repo/herdr-child", true));
+        app.state.workspaces = vec![parent, child, Workspace::test_new("target")];
         app.state.ensure_test_terminals();
         app.state.active = Some(0);
         app.state.selected = 0;
+        app
+    }
+
+    #[test]
+    fn api_tab_relocate_requires_confirmation_before_closing_a_worktree_group() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = worktree_group_fixture(&event_hub);
         let tab_id = app.public_tab_id(0, 0).unwrap();
-        let target_workspace_id = app.public_workspace_id(1);
+        let target_workspace_id = app.public_workspace_id(2);
 
         let response =
             app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "confirmation_required");
+        assert_eq!(app.state.workspaces.len(), 3);
+        assert!(app.state.workspaces.iter().all(|ws| ws.tabs.len() == 1));
+    }
+
+    #[test]
+    fn api_tab_relocate_completes_once_the_owner_confirms() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = worktree_group_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let source_workspace_id = app.public_workspace_id(0);
+        let target_workspace_id = app.public_workspace_id(2);
+
+        let response = app.handle_tab_relocate(
+            "req".into(),
+            TabRelocateParams {
+                confirm_source_close: true,
+                ..relocate_params(&tab_id, &target_workspace_id)
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated {
+            tab,
+            tabs,
+            closed_workspace_id,
+            ..
+        } = success.result
+        else {
+            panic!("expected a relocated tab");
+        };
+        assert_eq!(tab.workspace_id, target_workspace_id);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(
+            closed_workspace_id.as_deref(),
+            Some(source_workspace_id.as_str())
+        );
+        assert!(!app
+            .state
+            .workspaces
+            .iter()
+            .any(|ws| ws.id == source_workspace_id));
+    }
+
+    /// The relocation removes the emptied source workspace alone, so a confirmed
+    /// one must leave the rest of its worktree group running.
+    #[test]
+    fn api_tab_relocate_confirmed_keeps_the_rest_of_the_worktree_group() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = worktree_group_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let child_workspace_id = app.public_workspace_id(1);
+        let target_workspace_id = app.public_workspace_id(2);
+
+        app.handle_tab_relocate(
+            "req".into(),
+            TabRelocateParams {
+                confirm_source_close: true,
+                ..relocate_params(&tab_id, &target_workspace_id)
+            },
+        );
+
         assert_eq!(app.state.workspaces.len(), 2);
-        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
-        assert_eq!(app.state.workspaces[1].tabs.len(), 1);
+        let child = app
+            .state
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == child_workspace_id)
+            .expect("the group's linked worktree workspace stays open");
+        assert_eq!(child.tabs.len(), 1);
+    }
+
+    #[test]
+    fn api_tab_relocate_does_not_ask_when_the_source_workspace_survives() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = worktree_group_fixture(&event_hub);
+        app.state.workspaces[0].test_add_tab(Some("second"));
+        app.state.ensure_test_terminals();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let target_workspace_id = app.public_workspace_id(2);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::TabRelocated {
+                closed_workspace_id: None,
+                ..
+            }
+        ));
+        assert_eq!(app.state.workspaces.len(), 3);
     }
 }

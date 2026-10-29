@@ -851,14 +851,12 @@ impl ClientShellState {
                 tab_id,
                 source_workspace_id,
                 target_workspace_id,
-                confirmed,
             } => {
                 return (
                     self.complete_tab_relocate(
                         tab_id,
                         source_workspace_id,
                         target_workspace_id,
-                        confirmed,
                         result,
                     ),
                     Vec::new(),
@@ -891,7 +889,8 @@ impl ClientShellState {
         (repaint, Vec::new())
     }
 
-    /// Move a whole tab to another space of the machine on display.
+    /// Move a whole tab to another space of the machine on display. `confirmed` carries the
+    /// owner's answer to the confirmation a relocation that empties the source space needs.
     pub(super) fn request_tab_relocate(
         &mut self,
         tab_id: String,
@@ -919,12 +918,12 @@ impl ClientShellState {
                 workspace_id: target_workspace_id.clone(),
                 insert_index: None,
                 focus: true,
+                confirm_source_close: confirmed,
             }),
             PendingEndpointKind::TabRelocate {
                 tab_id,
                 source_workspace_id,
                 target_workspace_id,
-                confirmed,
             },
             outcome,
         );
@@ -935,7 +934,6 @@ impl ClientShellState {
         tab_id: String,
         source_workspace_id: String,
         target_workspace_id: String,
-        confirmed: bool,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> bool {
         match result {
@@ -950,15 +948,13 @@ impl ClientShellState {
                 true
             }
             Err(error) if error.code.as_deref() == Some("confirmation_required") => {
-                // An answered confirmation must not ask again, and a source space that has
-                // already gone has nothing left to confirm; both owe the user the refusal.
-                if confirmed
-                    || !self.open_tab_relocate_confirmation(
-                        tab_id,
-                        source_workspace_id,
-                        target_workspace_id,
-                    )
-                {
+                // A source space that has already gone has nothing left to confirm, so it
+                // owes the user the refusal instead of an unanswerable question.
+                if !self.open_tab_relocate_confirmation(
+                    tab_id,
+                    source_workspace_id,
+                    target_workspace_id,
+                ) {
                     self.push_endpoint_notice(
                         ClientEndpointNoticeKind::Rejected,
                         "tab.relocate:confirmation_required",

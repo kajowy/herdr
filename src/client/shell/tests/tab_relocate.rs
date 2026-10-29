@@ -261,13 +261,17 @@ fn tab_relocate_confirmation_asks_before_it_closes_the_source_space() {
     let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
         panic!("tab relocate request");
     };
+    assert!(matches!(
+        &request.method,
+        Method::TabRelocate(params) if !params.confirm_source_close
+    ));
 
     state.handle_endpoint_result(
         "boot-1",
         &request.id,
         Err(ClientShellEndpointError {
             code: Some("confirmation_required".into()),
-            message: "relocating this tab would close a worktree group".into(),
+            message: "relocating this tab closes the workspace it leaves behind".into(),
         }),
     );
     assert!(matches!(
@@ -280,12 +284,16 @@ fn tab_relocate_confirmation_asks_before_it_closes_the_source_space() {
         accepted.actions.as_slice(),
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method, Method::TabRelocate(params)
-                if params.tab_id == "tab_1" && params.workspace_id == "ws_2" && params.focus)
+                if params.tab_id == "tab_1"
+                    && params.workspace_id == "ws_2"
+                    && params.focus
+                    && params.confirm_source_close)
     ));
 }
 
+/// The confirmation is about a move, not about closing a tab or a worktree group.
 #[test]
-fn confirmed_tab_relocate_does_not_ask_again() {
+fn tab_relocate_confirmation_reads_as_a_move() {
     let mut state = relocate_state();
     let target = workspace_row(&state, "ws_2");
     drag_first_tab_onto(&mut state, target);
@@ -293,24 +301,90 @@ fn confirmed_tab_relocate_does_not_ask_again() {
     let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
         panic!("tab relocate request");
     };
-    let refusal = || ClientShellEndpointError {
-        code: Some("confirmation_required".into()),
-        message: "relocating this tab would close a worktree group".into(),
+
+    state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Err(ClientShellEndpointError {
+            code: Some("confirmation_required".into()),
+            message: "relocating this tab closes the workspace it leaves behind".into(),
+        }),
+    );
+
+    let Some(ClientShellOverlay::ConfirmClose(confirm)) = state.overlay.as_ref() else {
+        panic!("relocation confirmation");
     };
-    state.handle_endpoint_result("boot-1", &request.id, Err(refusal()));
+    assert_eq!(confirm.title, "Move tab and close workspace?");
+    assert!(
+        confirm.detail.contains("moving this tab empties it"),
+        "detail: {}",
+        confirm.detail
+    );
+}
+
+#[test]
+fn confirmed_tab_relocate_completes_and_drops_the_source_space() {
+    let mut state = relocate_state();
+    let mut projected = relocate_snapshot();
+    // The focused space holds the dragged tab alone, so relocating it closes the space.
+    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
+    state.set_snapshot(Box::new(projected));
+    state
+        .compose(106, 20)
+        .expect("one tab in the focused space");
+    let target = workspace_row(&state, "ws_2");
+    drag_first_tab_onto(&mut state, target);
+    let release = release_at(&mut state, target);
+    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
+        panic!("tab relocate request");
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Err(ClientShellEndpointError {
+            code: Some("confirmation_required".into()),
+            message: "relocating this tab closes the workspace it leaves behind".into(),
+        }),
+    );
     let accepted = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = &accepted.actions[..] else {
         panic!("confirmed tab relocate request");
     };
+    assert!(matches!(
+        &request.method,
+        Method::TabRelocate(params) if params.confirm_source_close
+    ));
 
-    state.handle_endpoint_result("boot-1", &request.id, Err(refusal()));
+    let moved = TabInfo {
+        tab_id: "tab_1_2".into(),
+        workspace_id: "ws_2".into(),
+        number: 1,
+        label: "1".into(),
+        focused: true,
+        pane_count: 1,
+        agent_status: crate::api::schema::AgentStatus::Idle,
+    };
+    let (repaint, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Ok(crate::api::schema::ResponseResult::TabRelocated {
+            tab: moved.clone(),
+            tabs: vec![moved],
+            insert_index: 0,
+            closed_workspace_id: Some("ws_1".into()),
+        }),
+    );
 
+    assert!(repaint);
+    assert!(actions.is_empty());
     assert!(state.overlay.is_none());
-    let notice = state
-        .visible_endpoint_notice
-        .as_ref()
-        .expect("refusal notice");
-    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Rejected);
+    assert!(state.visible_endpoint_notice.is_none());
+    let projection = state.snapshot.as_deref().expect("projection");
+    assert!(projection
+        .workspaces
+        .iter()
+        .all(|workspace| workspace.workspace_id == "ws_2"));
+    assert_eq!(projection.focused_tab_id.as_deref(), Some("tab_1_2"));
 }
 
 #[test]

@@ -51,6 +51,11 @@ pub struct TabRelocateParams {
     /// Switch the view to the moved tab in its new workspace.
     #[serde(default)]
     pub focus: bool,
+    /// Proceed although the relocation empties, and therefore closes, the
+    /// workspace the tab leaves behind. Without it such a relocation is
+    /// refused with `confirmation_required` while `ui.confirm_close` is on.
+    #[serde(default)]
+    pub confirm_source_close: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

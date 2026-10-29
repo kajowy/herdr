@@ -4453,6 +4453,11 @@
         "TabRelocateParams": {
           "description": "Move a whole tab to another workspace on the same server.",
           "properties": {
+            "confirm_source_close": {
+              "default": false,
+              "description": "Proceed although the relocation empties, and therefore closes, the\nworkspace the tab leaves behind. Without it such a relocation is\nrefused with `confirmation_required` while `ui.confirm_close` is on.",
+              "type": "boolean"
+            },
             "focus": {
               "default": false,
               "description": "Switch the view to the moved tab in its new workspace.",

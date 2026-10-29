@@ -304,7 +304,7 @@ mod tests {
         );
         assert_eq!(
             actual.remove("tab.relocate").as_deref(),
-            Some("b354383af6108a9392d61178517d964e60462b0b11ba498f04cd51f7f58b72a7")
+            Some("9586b6fc8bee858752dd4551b51783d5c7ae31659571530e21cfe903e0768b11")
         );
 
         const FILE_PUT_V1_SHAPE_DIGESTS: &[(&str, &str)] = &[
@@ -405,6 +405,7 @@ mod tests {
                 workspace_id: "w2".into(),
                 insert_index: None,
                 focus: false,
+                confirm_source_close: false,
             },
         )));
         assert!(supported_client_shell_method_names().contains(&"tab.relocate"));

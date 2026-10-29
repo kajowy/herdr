@@ -120,7 +120,7 @@ Raw socket method names use dot notation:
 processes, to another workspace on the same server:
 
 ```json
-{"id":"req_relocate","method":"tab.relocate","params":{"tab_id":"w1:t2","workspace_id":"w2","insert_index":0,"focus":true}}
+{"id":"req_relocate","method":"tab.relocate","params":{"tab_id":"w1:t2","workspace_id":"w2","insert_index":0,"focus":true,"confirm_source_close":false}}
 ```
 
 `workspace_id` must differ from the tab's current workspace; reordering inside
@@ -132,7 +132,9 @@ workspace's authoritative `tabs`, the final `insert_index`, and an optional
 `closed_workspace_id` for a source workspace the move emptied. Relocating the
 last tab out of a workspace closes it, so it needs the same confirmation
 `tab.close` needs and returns `confirmation_required` when that confirmation is
-missing. Subscribers see `tab.moved` for the new position, plus
+missing; repeat the request with `confirm_source_close: true` to go through. The
+relocation closes that one workspace only and leaves the rest of its worktree
+group open. Subscribers see `tab.moved` for the new position, plus
 `workspace.closed` when the source workspace went away. Older servers do not
 advertise `tab.relocate`; clients should check the advertised method list
 instead of treating its absence as success.
@@ -1004,7 +1006,7 @@ CLI prints locally, and codes that belong to the client shell endpoint transport
 
 | Code | When it occurs |
 | --- | --- |
-| `confirmation_required` | Closing or relocating this pane or tab would close a worktree group. |
+| `confirmation_required` | Closing this pane or tab would close a worktree group, or relocating this tab would close the workspace it leaves behind. |
 | `copy_motion_unavailable` | The requested copy mode row is unavailable. |
 | `invalid_agent` | A reported agent label is empty. |
 | `invalid_metadata_request` | The request sets and clears the same metadata field, or sets nothing. |

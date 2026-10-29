@@ -1195,6 +1195,7 @@ fn authority_mutation_requests_round_trip() {
             workspace_id: "w2".into(),
             insert_index: Some(0),
             focus: true,
+            confirm_source_close: false,
         }),
     };
     let json = serde_json::to_value(&tab_relocate).unwrap();
