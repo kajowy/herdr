@@ -123,6 +123,8 @@ pub enum Method {
     TabRename(TabRenameParams),
     #[serde(rename = "tab.move")]
     TabMove(TabMoveParams),
+    #[serde(rename = "tab.relocate")]
+    TabRelocate(TabRelocateParams),
     #[serde(rename = "tab.close")]
     TabClose(TabTarget),
     #[serde(rename = "agent.list")]

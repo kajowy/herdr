@@ -759,9 +759,6 @@ impl AppState {
         }
     }
 
-    // The tab.relocate API method and the client drag/drop land in follow-up
-    // work; nothing calls this state operation until then.
-    #[allow(dead_code)]
     /// Move a whole tab to another workspace on this server, carrying its
     /// panes, their layout, its label, and their live runtimes.
     ///
@@ -851,8 +848,6 @@ impl AppState {
 }
 
 /// Where a relocated tab ended up, and what the relocation closed.
-// Read by the tab.relocate API method, which lands in follow-up work.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TabRelocation {
     /// Index of the target workspace once the relocation finished.
@@ -867,9 +862,6 @@ pub(crate) struct TabRelocation {
 }
 
 /// Why a tab relocation was refused.
-// Mapped to API error codes by the tab.relocate method, which lands in
-// follow-up work.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabRelocateError {
     /// No tab exists at the requested source position.

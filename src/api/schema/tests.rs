@@ -1188,6 +1188,20 @@ fn authority_mutation_requests_round_trip() {
     let restored: Request = serde_json::from_value(json).unwrap();
     assert_eq!(restored, tab_move);
 
+    let tab_relocate = Request {
+        id: "relocate_tab".into(),
+        method: Method::TabRelocate(TabRelocateParams {
+            tab_id: "w1:1".into(),
+            workspace_id: "w2".into(),
+            insert_index: Some(0),
+            focus: true,
+        }),
+    };
+    let json = serde_json::to_value(&tab_relocate).unwrap();
+    assert_eq!(json["method"], "tab.relocate");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, tab_relocate);
+
     let pane_focus = Request {
         id: "focus_pane".into(),
         method: Method::PaneFocus(PaneTarget {

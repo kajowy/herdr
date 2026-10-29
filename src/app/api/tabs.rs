@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    TabMoveParams, TabRelocateParams, TabRenameParams, TabTarget,
 };
+use crate::app::actions::{TabRelocateError, TabRelocation};
 use crate::app::{App, Mode};
 
 use super::responses::{encode_error, encode_success};
@@ -213,6 +214,113 @@ impl App {
         encode_success(id, ResponseResult::TabList { tabs })
     }
 
+    pub(super) fn handle_tab_relocate(&mut self, id: String, params: TabRelocateParams) -> String {
+        let TabRelocateParams {
+            tab_id,
+            workspace_id,
+            insert_index,
+            focus,
+        } = params;
+        let Some((source_ws_idx, source_tab_idx)) = self.parse_tab_id(&tab_id) else {
+            return tab_not_found(id, &tab_id);
+        };
+        let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
+            return workspace_not_found(id, &workspace_id);
+        };
+        // Relocating the last tab out of a workspace closes it, so it has to
+        // clear the same guards `tab.close` clears before closing one.
+        let closes_source_workspace = source_ws_idx != target_ws_idx
+            && self
+                .state
+                .workspaces
+                .get(source_ws_idx)
+                .is_some_and(|ws| ws.tabs.len() <= 1);
+        if closes_source_workspace {
+            if let Err(response) = self.require_restored_group_close_ready(
+                &id,
+                &self.state.workspace_close_indices(source_ws_idx),
+            ) {
+                return response;
+            }
+            if self
+                .state
+                .confirm_implicit_worktree_group_close(source_ws_idx)
+            {
+                return encode_error(
+                    id,
+                    "confirmation_required",
+                    "relocating this tab would close a worktree group",
+                );
+            }
+        }
+
+        let relocation = match self.state.relocate_tab(
+            source_ws_idx,
+            source_tab_idx,
+            target_ws_idx,
+            insert_index,
+        ) {
+            Ok(relocation) => relocation,
+            Err(TabRelocateError::TabNotFound) => return tab_not_found(id, &tab_id),
+            Err(TabRelocateError::TargetWorkspaceNotFound) => {
+                return workspace_not_found(id, &workspace_id)
+            }
+            Err(TabRelocateError::SameWorkspace) => {
+                return encode_error(
+                    id,
+                    "tab_already_in_workspace",
+                    format!("tab {tab_id} already belongs to workspace {workspace_id}"),
+                )
+            }
+        };
+        // The relocation result carries the only indices corrected for a closed
+        // source workspace; the ones resolved before the call may have shifted.
+        let TabRelocation {
+            target_workspace_idx,
+            target_tab_idx,
+            closed_source_workspace_id,
+            ..
+        } = relocation;
+        if focus {
+            self.state
+                .switch_workspace_tab(target_workspace_idx, target_tab_idx);
+        }
+        self.schedule_session_save();
+
+        let Some(tab) = self.tab_info(target_workspace_idx, target_tab_idx) else {
+            return encode_error(id, "tab_relocate_failed", "relocated tab is unavailable");
+        };
+        let tabs = self.tab_list_info(target_workspace_idx);
+        self.emit_event(EventEnvelope {
+            event: EventKind::TabMoved,
+            data: EventData::TabMoved {
+                tab_id: tab.tab_id.clone(),
+                workspace_id: tab.workspace_id.clone(),
+                insert_index: target_tab_idx,
+                tabs: tabs.clone(),
+            },
+        });
+        if let Some(closed_workspace_id) = &closed_source_workspace_id {
+            self.emit_event(EventEnvelope {
+                event: EventKind::WorkspaceClosed,
+                data: EventData::WorkspaceClosed {
+                    workspace_id: closed_workspace_id.clone(),
+                    workspace: None,
+                },
+            });
+        }
+
+        encode_success(
+            id,
+            ResponseResult::TabRelocated {
+                tab,
+                tabs,
+                insert_index: target_tab_idx,
+                closed_workspace_id: closed_source_workspace_id,
+            },
+        )
+    }
+
     pub(super) fn handle_tab_close(&mut self, id: String, target: TabTarget) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
@@ -323,7 +431,7 @@ mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
     use crate::{
-        api::schema::SuccessResponse,
+        api::schema::{ErrorResponse, SuccessResponse},
         config::{Config, ShellModeConfig},
         workspace::Workspace,
     };
@@ -478,5 +586,297 @@ mod tests {
             crate::worktree::canonical_or_original(&cached_cwd)
         );
         shutdown_test_runtimes(&mut app);
+    }
+
+    fn relocate_test_app(event_hub: &crate::api::EventHub) -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        )
+    }
+
+    /// Two workspaces where the source holds a second, split tab to relocate.
+    fn relocate_fixture(event_hub: &crate::api::EventHub) -> App {
+        let mut app = relocate_test_app(event_hub);
+        let mut source = Workspace::test_new("source");
+        let moved_idx = source.test_add_tab(Some("work"));
+        source.switch_tab(moved_idx);
+        source.test_split(ratatui::layout::Direction::Horizontal);
+        source.switch_tab(0);
+        let mut target = Workspace::test_new("target");
+        target.test_add_tab(Some("other"));
+        app.state.workspaces = vec![source, target];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app
+    }
+
+    fn relocate_params(tab_id: &str, workspace_id: &str) -> TabRelocateParams {
+        TabRelocateParams {
+            tab_id: tab_id.into(),
+            workspace_id: workspace_id.into(),
+            insert_index: None,
+            focus: false,
+        }
+    }
+
+    #[test]
+    fn api_tab_relocate_moves_the_tab_and_its_panes_to_the_target_workspace() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let moved_panes = app.state.workspaces[0].tabs[1].layout.pane_ids();
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated {
+            tab,
+            tabs,
+            insert_index,
+            closed_workspace_id,
+        } = success.result
+        else {
+            panic!("expected a relocated tab");
+        };
+        assert_eq!(tab.workspace_id, target_workspace_id);
+        assert_eq!(insert_index, 2);
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs[2].tab_id, tab.tab_id);
+        assert!(closed_workspace_id.is_none());
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 3);
+        assert_eq!(
+            app.state.workspaces[1].tabs[2].layout.pane_ids(),
+            moved_panes
+        );
+        assert_eq!(tab.pane_count, moved_panes.len());
+        let events = event_hub.events_after(0);
+        assert!(events.iter().any(|(_, event)| matches!(
+            &event.data,
+            EventData::TabMoved {
+                tab_id: moved_tab_id,
+                workspace_id,
+                insert_index: 2,
+                tabs,
+            } if moved_tab_id == &tab.tab_id
+                && workspace_id == &target_workspace_id
+                && tabs.len() == 3
+        )));
+    }
+
+    #[test]
+    fn api_tab_relocate_follows_the_tab_when_focus_is_requested() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response = app.handle_tab_relocate(
+            "req".into(),
+            TabRelocateParams {
+                focus: true,
+                ..relocate_params(&tab_id, &target_workspace_id)
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated { tab, .. } = success.result else {
+            panic!("expected a relocated tab");
+        };
+        assert!(tab.focused);
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.workspaces[1].active_tab, 2);
+    }
+
+    #[test]
+    fn api_tab_relocate_leaves_the_view_alone_without_focus() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated { tab, .. } = success.result else {
+            panic!("expected a relocated tab");
+        };
+        assert!(!tab.focused);
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.workspaces[1].active_tab, 0);
+    }
+
+    #[test]
+    fn api_tab_relocate_inserts_at_the_requested_index() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let moved_root = app.state.workspaces[0].tabs[1].root_pane;
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response = app.handle_tab_relocate(
+            "req".into(),
+            TabRelocateParams {
+                insert_index: Some(1),
+                ..relocate_params(&tab_id, &target_workspace_id)
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated { insert_index, .. } = success.result else {
+            panic!("expected a relocated tab");
+        };
+        assert_eq!(insert_index, 1);
+        assert_eq!(app.state.workspaces[1].tabs[1].root_pane, moved_root);
+    }
+
+    #[test]
+    fn api_tab_relocate_clamps_an_out_of_range_insert_index() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let moved_root = app.state.workspaces[0].tabs[1].root_pane;
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response = app.handle_tab_relocate(
+            "req".into(),
+            TabRelocateParams {
+                insert_index: Some(99),
+                ..relocate_params(&tab_id, &target_workspace_id)
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated { insert_index, .. } = success.result else {
+            panic!("expected a relocated tab");
+        };
+        assert_eq!(insert_index, 2);
+        assert_eq!(app.state.workspaces[1].tabs[2].root_pane, moved_root);
+    }
+
+    #[test]
+    fn api_tab_relocate_rejects_an_unknown_tab() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params("w9:t9", &target_workspace_id));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "tab_not_found");
+    }
+
+    #[test]
+    fn api_tab_relocate_rejects_an_unknown_target_workspace() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+
+        let response = app.handle_tab_relocate("req".into(), relocate_params(&tab_id, "w9"));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "workspace_not_found");
+    }
+
+    #[test]
+    fn api_tab_relocate_rejects_the_tabs_current_workspace() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_fixture(&event_hub);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let source_workspace_id = app.public_workspace_id(0);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &source_workspace_id));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "tab_already_in_workspace");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+    }
+
+    #[test]
+    fn api_tab_relocate_reports_a_closed_source_workspace() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_test_app(&event_hub);
+        app.state.workspaces = vec![Workspace::test_new("source"), Workspace::test_new("target")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let source_workspace_id = app.public_workspace_id(0);
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabRelocated {
+            closed_workspace_id,
+            insert_index,
+            ..
+        } = success.result
+        else {
+            panic!("expected a relocated tab");
+        };
+        assert_eq!(
+            closed_workspace_id.as_deref(),
+            Some(source_workspace_id.as_str())
+        );
+        assert_eq!(insert_index, 1);
+        assert_eq!(app.state.workspaces.len(), 1);
+        let events = event_hub.events_after(0);
+        assert!(events.iter().any(|(_, event)| matches!(
+            &event.data,
+            EventData::WorkspaceClosed {
+                workspace_id,
+                workspace: None,
+            } if workspace_id == &source_workspace_id
+        )));
+    }
+
+    #[test]
+    fn api_tab_relocate_requires_confirmation_before_closing_a_worktree_group() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = relocate_test_app(&event_hub);
+        let mut parent = Workspace::test_new("parent");
+        parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        let mut child = Workspace::test_new("child");
+        child.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-child".into(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![parent, child];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let target_workspace_id = app.public_workspace_id(1);
+
+        let response =
+            app.handle_tab_relocate("req".into(), relocate_params(&tab_id, &target_workspace_id));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "confirmation_required");
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 1);
     }
 }

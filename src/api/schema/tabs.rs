@@ -36,6 +36,23 @@ pub struct TabMoveParams {
     pub insert_index: usize,
 }
 
+/// Move a whole tab to another workspace on the same server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabRelocateParams {
+    /// Tab to relocate, in the workspace it currently lives in.
+    pub tab_id: String,
+    /// Workspace the tab moves to. It must differ from the tab's current
+    /// workspace; reordering inside one workspace stays `tab.move`.
+    pub workspace_id: String,
+    /// Position among the target workspace's tabs, clamped to the end. Omit to
+    /// append.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_index: Option<usize>,
+    /// Switch the view to the moved tab in its new workspace.
+    #[serde(default)]
+    pub focus: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,

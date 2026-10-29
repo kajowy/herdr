@@ -46,6 +46,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.create",
     "tab.focus",
     "tab.move",
+    "tab.relocate",
     "tab.rename",
     "workspace.close",
     "workspace.create",
@@ -301,6 +302,10 @@ mod tests {
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
+        assert_eq!(
+            actual.remove("tab.relocate").as_deref(),
+            Some("b354383af6108a9392d61178517d964e60462b0b11ba498f04cd51f7f58b72a7")
+        );
 
         const FILE_PUT_V1_SHAPE_DIGESTS: &[(&str, &str)] = &[
             (
@@ -390,6 +395,19 @@ mod tests {
             );
         }
         assert!(!supports_client_shell_method_name("file.get.begin"));
+    }
+
+    #[test]
+    fn tab_relocate_is_advertised_on_the_client_shell_lane() {
+        assert!(supports_client_shell_method(&Method::TabRelocate(
+            crate::api::schema::TabRelocateParams {
+                tab_id: "w1:t1".into(),
+                workspace_id: "w2".into(),
+                insert_index: None,
+                focus: false,
+            },
+        )));
+        assert!(supported_client_shell_method_names().contains(&"tab.relocate"));
     }
 
     #[test]

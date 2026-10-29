@@ -972,9 +972,6 @@ impl Workspace {
         self.unregister_pane(pane_id);
     }
 
-    // Paired with `insert_moved_tab` by `AppState::relocate_tab`, whose API
-    // method lands in follow-up work.
-    #[allow(dead_code)]
     /// Detach a whole tab without terminating any of its pane runtimes.
     /// The panes keep their identities and lose only this workspace's public
     /// numbering, which the receiving workspace assigns again.
@@ -1008,9 +1005,6 @@ impl Workspace {
         })
     }
 
-    // Paired with `take_tab_for_move` by `AppState::relocate_tab`, whose API
-    // method lands in follow-up work.
-    #[allow(dead_code)]
     /// Attach a tab detached from another workspace, giving it and its panes
     /// fresh public numbers here. `insert_index` clamps to the end and `None`
     /// appends. The tab this workspace was focused on stays focused.
@@ -1238,18 +1232,13 @@ pub(crate) struct TakenPane {
 }
 
 /// A tab detached from a workspace with its panes, layout, and runtimes intact.
-// Constructed by `take_tab_for_move`, which has no caller until the
-// tab.relocate API method lands.
-#[allow(dead_code)]
 pub(crate) struct MovedTab {
     tab: Tab,
     #[cfg(test)]
     runtimes: Vec<(PaneId, TerminalRuntime)>,
 }
 
-// Returned by `take_tab_for_move`, which has no caller until the tab.relocate
-// API method lands.
-#[allow(dead_code)]
+/// A detached tab plus what its removal did to the source workspace.
 pub(crate) struct TakenTab {
     pub moved: MovedTab,
     /// True when detaching the tab left the source workspace without tabs.
