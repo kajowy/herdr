@@ -592,7 +592,7 @@ pub(super) fn render_expanded(
                 });
                 // A tab can only be relocated within the machine on display.
                 if endpoint_active
-                    && state.tab_drop_workspace_id == Some(workspace.workspace_id.as_str())
+                    && state.drop_target_workspace_id == Some(workspace.workspace_id.as_str())
                 {
                     buffer.set_style(rect, Style::default().bg(palette.surface1));
                 }

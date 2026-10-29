@@ -170,7 +170,7 @@ pub(crate) fn render_collapsed_sidebar(
             status_icon(agent.agent_status, config.status_indicators),
             Style::default().fg(status_color(agent.agent_status, palette)),
         );
-        hits.agents.push((rect, pane_id));
+        hits.agents.push((rect, pane_id, agent.tab_id.clone()));
     }
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
         Rect::default()
@@ -336,8 +336,8 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        // A tab held over this space owns its background until the drop resolves.
-        if state.tab_drop_workspace_id == Some(workspace.workspace_id.as_str()) {
+        // A tab or agent pane held over this space owns its background until the drop resolves.
+        if state.drop_target_workspace_id == Some(workspace.workspace_id.as_str()) {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
         } else if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
@@ -485,6 +485,9 @@ fn render_grouped_agent_sidebar(
         config,
         state.agent_scroll,
         state.selected_workspace_id,
+        state
+            .drop_target_workspace_id
+            .map(|workspace_id| (state.active_endpoint_id, workspace_id)),
         false,
         hits,
     );

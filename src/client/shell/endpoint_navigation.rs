@@ -151,8 +151,8 @@ impl ClientShellState {
             .hits
             .endpoint_agents
             .iter()
-            .find(|(rect, _, _)| super::contains(*rect, point))
-            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
+            .find(|(rect, _, _, _)| super::contains(*rect, point))
+            .map(|(_, endpoint_id, pane_id, _)| (endpoint_id.clone(), pane_id.clone()))
         else {
             return false;
         };

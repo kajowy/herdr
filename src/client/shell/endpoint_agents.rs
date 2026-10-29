@@ -38,7 +38,7 @@ pub(super) fn render_collapsed(
                 }),
         );
         hits.endpoint_agents
-            .push((rect, row.endpoint_id, row.agent.pane_id));
+            .push((rect, row.endpoint_id, row.agent.pane_id, row.agent.tab_id));
     }
 }
 
@@ -80,6 +80,9 @@ pub(super) fn render_expanded(
             config,
             state.agent_scroll,
             state.selected_workspace_id,
+            state
+                .drop_target_workspace_id
+                .map(|workspace_id| (state.active_endpoint_id, workspace_id)),
             true,
             hits,
         );
@@ -106,8 +109,12 @@ pub(super) fn render_expanded(
                         .add_modifier(Modifier::DIM),
                 );
             }
-            hits.endpoint_agents
-                .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
+            hits.endpoint_agents.push((
+                rect,
+                row.endpoint_id.clone(),
+                row.agent.pane_id.clone(),
+                row.agent.tab_id.clone(),
+            ));
         },
     );
 }

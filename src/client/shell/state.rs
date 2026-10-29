@@ -102,8 +102,9 @@ pub(super) struct ShellHitMap {
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
-    pub(super) agents: Vec<(Rect, String)>,
-    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
+    /// Agent rows with the pane they run in and the tab that pane belongs to.
+    pub(super) agents: Vec<(Rect, String, String)>,
+    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String, String)>,
     /// Grouped agent panel space headers and their collapse keys.
     pub(super) agent_groups: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
@@ -190,6 +191,14 @@ pub(super) struct ClientWorkspacePress {
     pub(super) start_row: u16,
 }
 
+pub(super) struct ClientAgentPress {
+    pub(super) pane_id: String,
+    pub(super) tab_id: String,
+    pub(super) workspace_id: String,
+    pub(super) start_column: u16,
+    pub(super) start_row: u16,
+}
+
 pub(super) struct ClientTabPress {
     pub(super) tab_id: String,
     pub(super) workspace_id: String,
@@ -224,6 +233,15 @@ pub(super) enum ClientChromeDrag {
         insert_index: Option<usize>,
         /// Space row under the pointer once the drag left the tab bar. It relocates the tab
         /// to another space instead of reordering it in place.
+        workspace_target: Option<String>,
+    },
+    /// An agent row on its way to another space. The pane it runs in lands there as a new
+    /// tab, so the panes that share its current tab stay where they are.
+    AgentPane {
+        pane_id: String,
+        tab_id: String,
+        workspace_id: String,
+        /// Space row under the pointer, when it belongs to the machine on display.
         workspace_target: Option<String>,
     },
     Workspace {
@@ -930,6 +948,7 @@ pub(crate) struct ClientShellState {
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
+    pub(super) agent_press: Option<ClientAgentPress>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
@@ -1113,6 +1132,7 @@ impl ClientShellState {
             chrome_drag: None,
             workspace_press: None,
             tab_press: None,
+            agent_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
             workspace_scroll: 0,
@@ -1306,6 +1326,7 @@ impl ClientShellState {
         self.chrome_drag = None;
         self.workspace_press = None;
         self.tab_press = None;
+        self.agent_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
         self.tab_scroll = 0;
@@ -1759,6 +1780,7 @@ impl ClientShellState {
             self.chrome_drag = None;
             self.workspace_press = None;
             self.tab_press = None;
+            self.agent_press = None;
             if self.pane_mouse_gesture.as_ref().is_some_and(|gesture| {
                 gesture.hit.popup && previous_popup.as_deref() == Some(gesture.hit.pane_id.as_str())
             }) {

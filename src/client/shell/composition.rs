@@ -73,7 +73,7 @@ impl ClientShellState {
             spaces_section_collapsed: self.spaces_section_collapsed,
             agents_section_collapsed: self.agents_section_collapsed,
             tab_drag_insert_index: None,
-            tab_drop_workspace_id: None,
+            drop_target_workspace_id: None,
             selected_workspace_id: self
                 .navigate_workspace_id
                 .as_ref()
@@ -198,7 +198,7 @@ impl ClientShellState {
             self.reveal_focused_tab = true;
         }
         // A space row under the pointer owns the drop, so the in-bar indicator steps aside.
-        let (tab_drag_insert_index, tab_drop_workspace_id) = match &self.chrome_drag {
+        let (tab_drag_insert_index, drop_target_workspace_id) = match &self.chrome_drag {
             Some(ClientChromeDrag::Tab {
                 insert_index,
                 workspace_target,
@@ -207,6 +207,9 @@ impl ClientShellState {
                 Some(workspace_id) => (None, Some(workspace_id.as_str())),
                 None => (*insert_index, None),
             },
+            Some(ClientChromeDrag::AgentPane {
+                workspace_target, ..
+            }) => (None, workspace_target.as_deref()),
             _ => (None, None),
         };
         let (dragged_workspace_id, workspace_drop_indicator_row) = match &self.chrome_drag {
@@ -244,7 +247,7 @@ impl ClientShellState {
                 spaces_section_collapsed: self.spaces_section_collapsed,
                 agents_section_collapsed: self.agents_section_collapsed,
                 tab_drag_insert_index,
-                tab_drop_workspace_id,
+                drop_target_workspace_id,
                 selected_workspace_id: self
                     .navigate_workspace_id
                     .as_ref()

@@ -889,6 +889,54 @@ impl ClientShellState {
         (repaint, Vec::new())
     }
 
+    /// Move an agent's pane into a new tab of another space on the machine on display. The
+    /// panes that share its tab stay in place, so only a tab the pane leaves empty hands its
+    /// user-given name over; a positional tab number is left behind to be renumbered.
+    pub(super) fn request_agent_pane_move(
+        &mut self,
+        pane_id: String,
+        tab_id: String,
+        target_workspace_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let resolved = snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == pane_id && pane.tab_id == tab_id)
+            && snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == target_workspace_id);
+        if !resolved {
+            return;
+        }
+        let solo = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.tab_id == tab_id)
+            .count()
+            == 1;
+        let label = snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id && tab.custom_label && solo)
+            .map(|tab| tab.label.clone());
+        self.push_endpoint_method(
+            crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+                pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some(target_workspace_id),
+                    label,
+                },
+                focus: true,
+            }),
+            outcome,
+        );
+    }
+
     /// Move a whole tab to another space of the machine on display. `confirmed` carries the
     /// owner's answer to the confirmation a relocation that empties the source space needs.
     pub(super) fn request_tab_relocate(
@@ -1138,7 +1186,7 @@ impl ClientShellState {
                     .hits
                     .agents
                     .iter()
-                    .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
+                    .any(|(_, visible_pane_id, _)| visible_pane_id == &pane_id)
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }

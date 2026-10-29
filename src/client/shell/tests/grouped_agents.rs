@@ -193,11 +193,11 @@ fn clicking_grouped_space_header_toggles_collapse() {
 fn clicking_grouped_agent_row_focuses_its_pane() {
     let mut state = grouped_state();
     state.compose(106, 30).expect("grouped sidebar frame");
-    let (rect, _) = state
+    let (rect, _, _) = state
         .hits
         .agents
         .iter()
-        .find(|(_, pane_id)| pane_id == "pane_3")
+        .find(|(_, pane_id, _)| pane_id == "pane_3")
         .cloned()
         .expect("pane_3 agent row");
 

@@ -254,6 +254,7 @@ fn surface_with_popup() -> PaneSurfaceFrame {
 }
 
 mod agent_marks;
+mod agent_pane_move;
 mod agents_worktrees_notifications;
 mod chrome_context;
 mod close_pane;

@@ -3,7 +3,7 @@ use crate::api::schema::{Method, TabInfo};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
 /// Two local spaces: the focused `ws_1` carries `tab_1` and `tab_2`, `ws_2` carries `tab_3`.
-fn relocate_snapshot() -> ClientShellSnapshot {
+pub(super) fn relocate_snapshot() -> ClientShellSnapshot {
     let mut projected = snapshot();
     let mut sibling_tab = projected.tabs[0].clone();
     sibling_tab.tab_id = "tab_2".into();
@@ -36,7 +36,7 @@ fn relocate_state() -> ClientShellState {
     state
 }
 
-fn mouse(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
+pub(super) fn mouse(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
     RawInputEvent::Mouse(MouseEvent {
         kind,
         column,
@@ -45,7 +45,7 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
     })
 }
 
-fn workspace_row(state: &ClientShellState, workspace_id: &str) -> Rect {
+pub(super) fn workspace_row(state: &ClientShellState, workspace_id: &str) -> Rect {
     state
         .hits
         .workspaces

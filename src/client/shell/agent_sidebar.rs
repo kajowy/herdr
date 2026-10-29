@@ -15,6 +15,8 @@ pub(super) const AGENT_PANEL_HEADER_ROWS: u16 = 2;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    /// Tab the agent's pane belongs to, kept so a drag off this row needs no snapshot lookup.
+    pub(super) tab_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
@@ -88,7 +90,8 @@ pub(super) fn render_agent_panel(
         hits,
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
+            hits.agents
+                .push((rect, row.pane_id.clone(), row.tab_id.clone()));
             render_agent_row(buffer, rect, row, config);
         },
     );
@@ -343,6 +346,7 @@ pub(super) fn agent_row(
     );
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        tab_id: agent.tab_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
         rows,
@@ -433,7 +437,15 @@ pub(super) fn render_agent_row(
 /// per-endpoint collapsed-group set and its persistence with worktree groups;
 /// the prefix keeps it apart from worktree keys.
 pub(super) fn agent_group_key(workspace_id: &str) -> String {
-    format!("agents:{workspace_id}")
+    format!("{AGENT_GROUP_PREFIX}{workspace_id}")
+}
+
+const AGENT_GROUP_PREFIX: &str = "agents:";
+
+/// The space a grouped agent header stands for, so a drag can drop on it where the tree
+/// replaces the spaces list.
+pub(super) fn agent_group_workspace_id(key: &str) -> Option<&str> {
+    key.strip_prefix(AGENT_GROUP_PREFIX)
 }
 
 /// Where a run of grouped agent lines comes from.
@@ -463,6 +475,7 @@ pub(super) enum GroupedAgentLineKind {
     },
     Agent {
         pane_id: String,
+        tab_id: String,
         status: crate::api::schema::AgentStatus,
         focused: bool,
         /// Mark of the agent running there, shown instead of its name.
@@ -530,6 +543,7 @@ pub(super) fn push_grouped_agent_lines(
                 stale: source.stale,
                 kind: GroupedAgentLineKind::Agent {
                     pane_id: agent.pane_id.clone(),
+                    tab_id: agent.tab_id.clone(),
                     status: agent.agent_status,
                     focused: agent.focused && source.active,
                     mark,
@@ -604,6 +618,7 @@ pub(super) fn render_grouped_agent_list(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     selected_workspace: Option<&WorkspaceNavigationTarget>,
+    drop_target: Option<(&ClientEndpointId, &str)>,
     endpoint_hits: bool,
     hits: &mut ShellHitMap,
 ) {
@@ -626,6 +641,7 @@ pub(super) fn render_grouped_agent_list(
                 line,
                 config,
                 selected_workspace,
+                drop_target,
                 endpoint_hits,
                 hits,
             );
@@ -651,6 +667,7 @@ fn render_grouped_agent_line(
     line: &GroupedAgentLine,
     config: &ClientShellConfig,
     selected_workspace: Option<&WorkspaceNavigationTarget>,
+    drop_target: Option<(&ClientEndpointId, &str)>,
     endpoint_hits: bool,
     hits: &mut ShellHitMap,
 ) {
@@ -664,7 +681,11 @@ fn render_grouped_agent_line(
             status,
             collapsed,
         } => {
-            if selected_workspace
+            // In grouped mode these headers are the sidebar's only space rows, so a drag held
+            // over one has to show its drop target here.
+            if drop_target == Some((&line.endpoint_id, workspace_id.as_str())) {
+                buffer.set_style(rect, Style::default().bg(palette.surface1));
+            } else if selected_workspace
                 .is_some_and(|target| target.matches(&line.endpoint_id, workspace_id))
             {
                 buffer.set_style(
@@ -702,6 +723,7 @@ fn render_grouped_agent_line(
         }
         GroupedAgentLineKind::Agent {
             pane_id,
+            tab_id,
             status,
             focused,
             mark,
@@ -743,10 +765,14 @@ fn render_grouped_agent_line(
                 .style(row_style)
                 .render(rect, buffer);
             if endpoint_hits {
-                hits.endpoint_agents
-                    .push((rect, line.endpoint_id.clone(), pane_id.clone()));
+                hits.endpoint_agents.push((
+                    rect,
+                    line.endpoint_id.clone(),
+                    pane_id.clone(),
+                    tab_id.clone(),
+                ));
             } else {
-                hits.agents.push((rect, pane_id.clone()));
+                hits.agents.push((rect, pane_id.clone(), tab_id.clone()));
             }
         }
     }
