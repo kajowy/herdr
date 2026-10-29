@@ -708,6 +708,177 @@ impl AppState {
             self.active = Some(self.selected);
         }
     }
+
+    /// Remove a workspace that a cross-workspace move left without panes or
+    /// tabs, keeping `active` and `selected` on the same workspaces as before.
+    /// Returns the removed workspace's public id.
+    pub(crate) fn remove_workspace_emptied_by_move(&mut self, ws_idx: usize) -> Option<String> {
+        if ws_idx >= self.workspaces.len() {
+            return None;
+        }
+        let removed_id = self.workspaces.remove(ws_idx).id;
+        if self.workspaces.is_empty() {
+            self.active = None;
+            self.selected = 0;
+            return Some(removed_id);
+        }
+
+        if let Some(active) = self.active {
+            if active == ws_idx {
+                self.active = Some(ws_idx.min(self.workspaces.len() - 1));
+            } else if active > ws_idx {
+                self.active = Some(active - 1);
+            }
+        }
+        if self.selected == ws_idx {
+            self.selected = ws_idx.min(self.workspaces.len() - 1);
+        } else if self.selected > ws_idx {
+            self.selected -= 1;
+        }
+        Some(removed_id)
+    }
+
+    /// Point the workspace-scoped pane references that survive a move at the
+    /// workspace the panes now live in.
+    fn repoint_pane_workspace_id(&mut self, moved_panes: &[PaneId], workspace_id: &str) {
+        let moved: std::collections::HashSet<PaneId> = moved_panes.iter().copied().collect();
+        if let Some(focus) = self.previous_pane_focus.as_mut() {
+            if moved.contains(&focus.pane_id) {
+                focus.workspace_id = workspace_id.to_string();
+            }
+        }
+        if let Some(target) = self.toast.as_mut().and_then(|toast| toast.target.as_mut()) {
+            if moved.contains(&target.pane_id) {
+                target.workspace_id = workspace_id.to_string();
+            }
+        }
+        for notification in self.pending_agent_notifications.values_mut() {
+            if moved.contains(&notification.pane_id) {
+                notification.workspace_id = workspace_id.to_string();
+            }
+        }
+    }
+
+    // The tab.relocate API method and the client drag/drop land in follow-up
+    // work; nothing calls this state operation until then.
+    #[allow(dead_code)]
+    /// Move a whole tab to another workspace on this server, carrying its
+    /// panes, their layout, its label, and their live runtimes.
+    ///
+    /// `insert_index` places the tab among the target workspace's tabs and
+    /// clamps to the end; `None` appends. Focus is left coherent but never
+    /// follows the tab: the source keeps or re-derives a valid focused tab and
+    /// the target stays on the tab it was already focused on. Callers that want
+    /// the move to follow focus switch to the returned position themselves.
+    pub(crate) fn relocate_tab(
+        &mut self,
+        source_workspace_idx: usize,
+        source_tab_idx: usize,
+        target_workspace_idx: usize,
+        insert_index: Option<usize>,
+    ) -> Result<TabRelocation, TabRelocateError> {
+        if self
+            .workspaces
+            .get(source_workspace_idx)
+            .is_none_or(|ws| source_tab_idx >= ws.tabs.len())
+        {
+            return Err(TabRelocateError::TabNotFound);
+        }
+        if target_workspace_idx >= self.workspaces.len() {
+            return Err(TabRelocateError::TargetWorkspaceNotFound);
+        }
+        if source_workspace_idx == target_workspace_idx {
+            return Err(TabRelocateError::SameWorkspace);
+        }
+
+        let source = &self.workspaces[source_workspace_idx];
+        let source_workspace_id = source.id.clone();
+        let moved_panes = source.tabs[source_tab_idx].layout.pane_ids();
+        let previous_public_pane_ids: Vec<(String, PaneId)> = moved_panes
+            .iter()
+            .filter_map(|pane_id| {
+                let number = source.public_pane_number(*pane_id)?;
+                Some((
+                    crate::workspace::public_pane_id_for_number(&source_workspace_id, number),
+                    *pane_id,
+                ))
+            })
+            .collect();
+        let target_workspace_id = self.workspaces[target_workspace_idx].id.clone();
+
+        let Some(taken) = self.workspaces[source_workspace_idx].take_tab_for_move(source_tab_idx)
+        else {
+            return Err(TabRelocateError::TabNotFound);
+        };
+        // Keep the pane ids the source workspace published resolvable, the way
+        // a cross-workspace `pane.move` does.
+        for (public_pane_id, pane_id) in previous_public_pane_ids {
+            self.public_pane_id_aliases.insert(public_pane_id, pane_id);
+        }
+        let source_workspace_empty = taken.workspace_empty;
+        let mut target_tab_idx =
+            self.workspaces[target_workspace_idx].insert_moved_tab(taken.moved, insert_index);
+        self.repoint_pane_workspace_id(&moved_panes, &target_workspace_id);
+
+        let mut target_workspace_idx = target_workspace_idx;
+        let mut closed_source_workspace_id = None;
+        if source_workspace_empty {
+            closed_source_workspace_id =
+                self.remove_workspace_emptied_by_move(source_workspace_idx);
+            if let Some(idx) = self
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == target_workspace_id)
+            {
+                target_workspace_idx = idx;
+            }
+            target_tab_idx = target_tab_idx.min(
+                self.workspaces[target_workspace_idx]
+                    .tabs
+                    .len()
+                    .saturating_sub(1),
+            );
+        }
+
+        self.mark_session_dirty();
+        Ok(TabRelocation {
+            target_workspace_idx,
+            target_tab_idx,
+            closed_source_workspace_id,
+            moved_panes,
+        })
+    }
+}
+
+/// Where a relocated tab ended up, and what the relocation closed.
+// Read by the tab.relocate API method, which lands in follow-up work.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TabRelocation {
+    /// Index of the target workspace once the relocation finished.
+    pub target_workspace_idx: usize,
+    /// Index the moved tab occupies in the target workspace.
+    pub target_tab_idx: usize,
+    /// Public id of the source workspace when the relocation emptied it and it
+    /// was therefore closed.
+    pub closed_source_workspace_id: Option<String>,
+    /// Panes that travelled with the tab, in layout order.
+    pub moved_panes: Vec<PaneId>,
+}
+
+/// Why a tab relocation was refused.
+// Mapped to API error codes by the tab.relocate method, which lands in
+// follow-up work.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabRelocateError {
+    /// No tab exists at the requested source position.
+    TabNotFound,
+    /// No workspace exists at the requested target position.
+    TargetWorkspaceNotFound,
+    /// The tab already belongs to the target workspace, so there is nothing to
+    /// relocate. Reordering inside one workspace is `Workspace::move_tab`.
+    SameWorkspace,
 }
 
 // ---------------------------------------------------------------------------
@@ -4726,5 +4897,372 @@ mod tests {
         assert!(!deferred);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "notes");
+    }
+
+    /// Characterization: workspaces never hold zero tabs.
+    #[test]
+    fn workspaces_never_hold_zero_tabs_characterization() {
+        // Protected behavior: `Workspace::close_tab` refuses to drop the last tab
+        // and the app closes the whole workspace instead, so no operation may
+        // leave a workspace with zero tabs behind.
+        let mut state = app_with_workspaces(&["only", "other"]);
+        assert!(!state.workspaces[0].close_tab(0));
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+
+        state.selected = 0;
+        state.active = Some(0);
+        assert!(!state.close_tab());
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "other");
+        state.assert_invariants_for_test();
+    }
+
+    fn relocate_fixture() -> AppState {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        let moved_idx = state.workspaces[0].test_add_tab(Some("work"));
+        state.workspaces[0].switch_tab(moved_idx);
+        state.workspaces[0].test_split(Direction::Horizontal);
+        state.workspaces[0].test_split(Direction::Vertical);
+        state.workspaces[0].switch_tab(0);
+        state.ensure_test_terminals();
+        state
+    }
+
+    #[test]
+    fn relocate_tab_moves_every_pane_and_layout_to_the_target_workspace() {
+        let mut state = relocate_fixture();
+        let moved_layout = state.workspaces[0].tabs[1].layout.pane_ids();
+        let moved_root = state.workspaces[0].tabs[1].root_pane;
+        let moved_terminals: Vec<_> = moved_layout
+            .iter()
+            .map(|pane_id| {
+                state.workspaces[0].tabs[1].panes[pane_id]
+                    .attached_terminal_id
+                    .clone()
+            })
+            .collect();
+        assert_eq!(moved_layout.len(), 3);
+
+        let relocation = state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(relocation.target_workspace_idx, 1);
+        assert_eq!(relocation.target_tab_idx, 1);
+        assert_eq!(relocation.moved_panes, moved_layout);
+        assert!(relocation.closed_source_workspace_id.is_none());
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(state.workspaces[1].tabs.len(), 2);
+
+        let moved = &state.workspaces[1].tabs[1];
+        assert_eq!(moved.custom_name.as_deref(), Some("work"));
+        assert_eq!(moved.root_pane, moved_root);
+        assert_eq!(moved.layout.pane_ids(), moved_layout);
+        let relocated_terminals: Vec<_> = moved_layout
+            .iter()
+            .map(|pane_id| moved.panes[pane_id].attached_terminal_id.clone())
+            .collect();
+        assert_eq!(
+            relocated_terminals, moved_terminals,
+            "relocation must keep the existing pane runtimes attached"
+        );
+        for pane_id in &moved_layout {
+            assert!(state.workspaces[1].public_pane_number(*pane_id).is_some());
+            assert!(state.workspaces[0].public_pane_number(*pane_id).is_none());
+        }
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_keeps_tab_order_and_public_numbers_in_both_workspaces() {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        state.workspaces[0].test_add_tab(Some("a"));
+        state.workspaces[0].test_add_tab(Some("b"));
+        state.workspaces[1].test_add_tab(Some("c"));
+        state.ensure_test_terminals();
+
+        state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(
+            state.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| (tab.custom_name.clone(), tab.number))
+                .collect::<Vec<_>>(),
+            vec![(None, 1), (Some("b".to_string()), 3)]
+        );
+        assert_eq!(
+            state.workspaces[1]
+                .tabs
+                .iter()
+                .map(|tab| (tab.custom_name.clone(), tab.number))
+                .collect::<Vec<_>>(),
+            vec![
+                (None, 1),
+                (Some("c".to_string()), 2),
+                (Some("a".to_string()), 3)
+            ]
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_inserts_at_the_requested_index() {
+        let mut state = relocate_fixture();
+        state.workspaces[1].test_add_tab(Some("c"));
+        state.ensure_test_terminals();
+
+        let relocation = state
+            .relocate_tab(0, 1, 1, Some(1))
+            .expect("tab should relocate");
+
+        assert_eq!(relocation.target_tab_idx, 1);
+        assert_eq!(
+            state.workspaces[1]
+                .tabs
+                .iter()
+                .map(|tab| tab.custom_name.clone())
+                .collect::<Vec<_>>(),
+            vec![None, Some("work".to_string()), Some("c".to_string())]
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_clamps_an_out_of_range_insert_index_to_the_end() {
+        let mut state = relocate_fixture();
+        state.workspaces[1].test_add_tab(Some("c"));
+        state.ensure_test_terminals();
+
+        let relocation = state
+            .relocate_tab(0, 1, 1, Some(99))
+            .expect("tab should relocate");
+
+        assert_eq!(relocation.target_tab_idx, 2);
+        assert_eq!(
+            state.workspaces[1].tabs[2].custom_name.as_deref(),
+            Some("work")
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_rejects_an_unknown_tab() {
+        let mut state = relocate_fixture();
+
+        assert_eq!(
+            state.relocate_tab(0, 9, 1, None),
+            Err(TabRelocateError::TabNotFound)
+        );
+        assert_eq!(
+            state.relocate_tab(9, 0, 1, None),
+            Err(TabRelocateError::TabNotFound)
+        );
+        assert_eq!(state.workspaces[0].tabs.len(), 2);
+        assert_eq!(state.workspaces[1].tabs.len(), 1);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_rejects_an_unknown_target_workspace() {
+        let mut state = relocate_fixture();
+
+        assert_eq!(
+            state.relocate_tab(0, 1, 7, None),
+            Err(TabRelocateError::TargetWorkspaceNotFound)
+        );
+        assert_eq!(state.workspaces[0].tabs.len(), 2);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_rejects_the_tabs_current_workspace() {
+        let mut state = relocate_fixture();
+
+        assert_eq!(
+            state.relocate_tab(0, 1, 0, Some(0)),
+            Err(TabRelocateError::SameWorkspace)
+        );
+        assert_eq!(
+            state.workspaces[0].tabs[1].custom_name.as_deref(),
+            Some("work")
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_leaves_the_source_focused_on_a_surviving_tab() {
+        let mut state = relocate_fixture();
+        state.workspaces[0].switch_tab(1);
+
+        state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(state.workspaces[0].active_tab_index(), 0);
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_keeps_the_source_focus_on_the_same_unmoved_tab() {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        state.workspaces[0].test_add_tab(Some("a"));
+        state.workspaces[0].test_add_tab(Some("b"));
+        state.workspaces[0].switch_tab(2);
+        state.ensure_test_terminals();
+
+        state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(state.workspaces[0].active_tab_index(), 1);
+        assert_eq!(
+            state.workspaces[0].tabs[state.workspaces[0].active_tab_index()]
+                .custom_name
+                .as_deref(),
+            Some("b")
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_keeps_the_target_focused_on_its_own_tab() {
+        let mut state = relocate_fixture();
+        state.workspaces[1].test_add_tab(Some("c"));
+        state.workspaces[1].switch_tab(1);
+        state.ensure_test_terminals();
+
+        state
+            .relocate_tab(0, 1, 1, Some(0))
+            .expect("tab should relocate");
+
+        assert_eq!(state.workspaces[1].active_tab_index(), 2);
+        assert_eq!(
+            state.workspaces[1].tabs[state.workspaces[1].active_tab_index()]
+                .custom_name
+                .as_deref(),
+            Some("c")
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_closes_a_source_workspace_left_without_tabs() {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        state.ensure_test_terminals();
+        let source_id = state.workspaces[0].id.clone();
+        state.active = Some(0);
+        state.selected = 0;
+
+        let relocation = state
+            .relocate_tab(0, 0, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(
+            relocation.closed_source_workspace_id.as_deref(),
+            Some(source_id.as_str())
+        );
+        assert_eq!(relocation.target_workspace_idx, 0);
+        assert_eq!(relocation.target_tab_idx, 1);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "target");
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected, 0);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_shifts_focus_indices_when_the_source_workspace_closes() {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        state.ensure_test_terminals();
+        state.active = Some(1);
+        state.selected = 1;
+
+        state
+            .relocate_tab(0, 0, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected, 0);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_repoints_pane_references_to_the_target_workspace() {
+        let mut state = relocate_fixture();
+        let moved_pane = state.workspaces[0].tabs[1].root_pane;
+        let source_id = state.workspaces[0].id.clone();
+        let target_id = state.workspaces[1].id.clone();
+        state.previous_pane_focus = Some(PaneFocusTarget {
+            workspace_id: source_id.clone(),
+            pane_id: moved_pane,
+        });
+
+        state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(
+            state
+                .previous_pane_focus
+                .as_ref()
+                .map(|focus| focus.workspace_id.clone()),
+            Some(target_id)
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_keeps_the_previous_public_pane_ids_resolvable() {
+        let mut state = relocate_fixture();
+        let moved_pane = state.workspaces[0].tabs[1].root_pane;
+        let source_id = state.workspaces[0].id.clone();
+        let previous_public_id = crate::workspace::public_pane_id_for_number(
+            &source_id,
+            state.workspaces[0]
+                .public_pane_number(moved_pane)
+                .expect("moved pane should have a public number"),
+        );
+
+        state
+            .relocate_tab(0, 1, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(
+            state
+                .public_pane_id_aliases
+                .get(&previous_public_id)
+                .copied(),
+            Some(moved_pane)
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_preserves_adversarial_identity_invariants() {
+        let mut state = AppState::test_with_adversarial_identity_state();
+        state
+            .workspaces
+            .push(Workspace::test_adversarial_identity_state());
+        state.ensure_test_terminals();
+        state.assert_invariants_for_test();
+        let source_tabs_before = state.workspaces[0].tabs.len();
+        let target_tabs_before = state.workspaces[1].tabs.len();
+
+        let relocation = state
+            .relocate_tab(0, 1, 1, Some(0))
+            .expect("tab should relocate");
+
+        assert_eq!(relocation.target_tab_idx, 0);
+        assert_eq!(state.workspaces[0].tabs.len(), source_tabs_before - 1);
+        assert_eq!(state.workspaces[1].tabs.len(), target_tabs_before + 1);
+        state.workspaces[0].assert_invariants_for_test();
+        state.workspaces[1].assert_invariants_for_test();
+        state.assert_invariants_for_test();
     }
 }

@@ -972,6 +972,78 @@ impl Workspace {
         self.unregister_pane(pane_id);
     }
 
+    // Paired with `insert_moved_tab` by `AppState::relocate_tab`, whose API
+    // method lands in follow-up work.
+    #[allow(dead_code)]
+    /// Detach a whole tab without terminating any of its pane runtimes.
+    /// The panes keep their identities and lose only this workspace's public
+    /// numbering, which the receiving workspace assigns again.
+    pub(crate) fn take_tab_for_move(&mut self, tab_idx: usize) -> Option<TakenTab> {
+        if tab_idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(tab_idx);
+        #[cfg(test)]
+        let runtimes = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| {
+                self.test_runtimes
+                    .remove(&pane_id)
+                    .map(|runtime| (pane_id, runtime))
+            })
+            .collect();
+        for pane_id in tab.panes.keys() {
+            self.unregister_pane(*pane_id);
+        }
+        self.adjust_active_tab_after_removal(tab_idx);
+        Some(TakenTab {
+            moved: MovedTab {
+                tab,
+                #[cfg(test)]
+                runtimes,
+            },
+            workspace_empty: self.tabs.is_empty(),
+        })
+    }
+
+    // Paired with `take_tab_for_move` by `AppState::relocate_tab`, whose API
+    // method lands in follow-up work.
+    #[allow(dead_code)]
+    /// Attach a tab detached from another workspace, giving it and its panes
+    /// fresh public numbers here. `insert_index` clamps to the end and `None`
+    /// appends. The tab this workspace was focused on stays focused.
+    /// Returns the index the moved tab now occupies.
+    pub(crate) fn insert_moved_tab(
+        &mut self,
+        moved: MovedTab,
+        insert_index: Option<usize>,
+    ) -> usize {
+        let mut tab = moved.tab;
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        for pane_id in tab.layout.pane_ids() {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+        #[cfg(test)]
+        for (pane_id, runtime) in moved.runtimes {
+            self.test_runtimes.insert(pane_id, runtime);
+        }
+
+        let focused_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+        let insert_idx = insert_index.unwrap_or(self.tabs.len()).min(self.tabs.len());
+        let moved_root_pane = tab.root_pane;
+        self.tabs.insert(insert_idx, tab);
+        self.active_tab = focused_root_pane
+            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
+            .unwrap_or(insert_idx);
+        self.tabs
+            .iter()
+            .position(|tab| tab.root_pane == moved_root_pane)
+            .unwrap_or(insert_idx)
+    }
+
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
         self.public_pane_numbers.get(&pane_id).copied()
     }
@@ -1162,6 +1234,25 @@ impl Workspace {
 pub(crate) struct TakenPane {
     pub moved: MovedPane,
     pub removed_tab_idx: Option<usize>,
+    pub workspace_empty: bool,
+}
+
+/// A tab detached from a workspace with its panes, layout, and runtimes intact.
+// Constructed by `take_tab_for_move`, which has no caller until the
+// tab.relocate API method lands.
+#[allow(dead_code)]
+pub(crate) struct MovedTab {
+    tab: Tab,
+    #[cfg(test)]
+    runtimes: Vec<(PaneId, TerminalRuntime)>,
+}
+
+// Returned by `take_tab_for_move`, which has no caller until the tab.relocate
+// API method lands.
+#[allow(dead_code)]
+pub(crate) struct TakenTab {
+    pub moved: MovedTab,
+    /// True when detaching the tab left the source workspace without tabs.
     pub workspace_empty: bool,
 }
 
