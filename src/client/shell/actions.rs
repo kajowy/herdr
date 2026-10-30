@@ -913,16 +913,13 @@ impl ClientShellState {
         if !resolved {
             return;
         }
-        let solo = snapshot
-            .panes
-            .iter()
-            .filter(|pane| pane.tab_id == tab_id)
-            .count()
-            == 1;
+        // A tab's name describes the work in it, not the container, so the pane carries the name
+        // along even when siblings stay behind and keep it too. An auto-named tab has nothing but
+        // its position to offer, which would be meaningless in another workspace's numbering.
         let label = snapshot
             .tabs
             .iter()
-            .find(|tab| tab.tab_id == tab_id && tab.custom_label && solo)
+            .find(|tab| tab.tab_id == tab_id && tab.custom_label)
             .map(|tab| tab.label.clone());
         self.push_endpoint_method(
             crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {

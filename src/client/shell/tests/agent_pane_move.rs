@@ -225,12 +225,42 @@ fn a_solo_agent_pane_carries_its_custom_tab_label() {
 }
 
 #[test]
-fn a_shared_tabs_label_stays_with_the_panes_left_behind() {
+fn a_shared_tabs_label_travels_with_the_pane_that_leaves() {
     let mut projected = agent_snapshot();
     for tab in &mut projected.tabs {
         if tab.tab_id == "tab_1" {
             tab.label = "auto-impl TA-312".into();
             tab.custom_label = true;
+        }
+    }
+    let mut state = agent_state(projected);
+    let source = agent_row(&state, "pane_1");
+    let target = workspace_row(&state, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
+        panic!("pane move request");
+    };
+    // The name describes the work, which leaves with the pane; the siblings keep it too.
+    assert!(matches!(
+        &request.method,
+        Method::PaneMove(params)
+            if matches!(
+                &params.destination,
+                PaneMoveDestination::NewTab { label, .. }
+                    if label.as_deref() == Some("auto-impl TA-312")
+            )
+    ));
+}
+
+#[test]
+fn an_auto_named_tab_sends_no_label_because_it_only_has_a_number() {
+    let mut projected = agent_snapshot();
+    for tab in &mut projected.tabs {
+        if tab.tab_id == "tab_1" {
+            tab.label = "3".into();
+            tab.custom_label = false;
         }
     }
     let mut state = agent_state(projected);
