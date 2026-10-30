@@ -1041,7 +1041,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if self.config.confirm_close {
-            self.open_close_confirmation(workspace_id, None, close_group);
+            self.open_close_confirmation(workspace_id, None, close_group, None);
             return;
         }
         let close_group = close_group.unwrap_or_else(|| {
@@ -1079,7 +1079,7 @@ impl ClientShellState {
             .then(|| (tab.workspace_id.clone(), tab.tab_id.clone()))
         });
         if let Some((workspace_id, tab_id)) = target {
-            if self.open_close_confirmation(workspace_id, Some(tab_id), None) {
+            if self.open_close_confirmation(workspace_id, Some(tab_id), None, None) {
                 if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
                     if let Some(target) = confirm.tab_target.as_mut() {
                         target.pane_id = Some(pane_id);
@@ -1106,7 +1106,7 @@ impl ClientShellState {
             .then(|| target.workspace_id.clone())
         });
         if let Some(workspace_id) = workspace_id {
-            if self.open_close_confirmation(workspace_id, Some(tab_id.clone()), None) {
+            if self.open_close_confirmation(workspace_id, Some(tab_id.clone()), None, None) {
                 outcome.repaint = true;
                 return;
             }
@@ -1146,6 +1146,27 @@ impl ClientShellState {
                 );
                 return;
             }
+            if let Some(target_workspace_id) = target.relocate_to_workspace_id {
+                if !self.snapshot.as_deref().is_some_and(|snapshot| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.workspace_id == target_workspace_id)
+                }) {
+                    self.receive_endpoint_unavailable(
+                        "Move target changed; try the drag again".into(),
+                    );
+                    return;
+                }
+                self.request_tab_relocate(
+                    target.tab_id,
+                    target.workspace.workspace_id,
+                    target_workspace_id,
+                    true,
+                    outcome,
+                );
+                return;
+            }
             if let Some(pane_id) = target.pane_id {
                 crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id })
             } else {
@@ -1163,7 +1184,23 @@ impl ClientShellState {
     }
 
     pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: String) {
-        self.open_close_confirmation(workspace_id, None, None);
+        self.open_close_confirmation(workspace_id, None, None, None);
+    }
+
+    /// Ask about a relocation the server refused until the space the tab leaves behind may
+    /// close, using the confirmation a `tab.close` of the same tab would raise.
+    pub(super) fn open_tab_relocate_confirmation(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+    ) -> bool {
+        self.open_close_confirmation(
+            source_workspace_id,
+            Some(tab_id),
+            None,
+            Some(target_workspace_id),
+        )
     }
 
     fn open_close_confirmation(
@@ -1171,6 +1208,7 @@ impl ClientShellState {
         workspace_id: String,
         tab_id: Option<String>,
         close_group: Option<bool>,
+        relocate_to: Option<String>,
     ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
@@ -1206,8 +1244,10 @@ impl ClientShellState {
             })
             .unwrap_or_else(|| vec![workspace]);
         let closes_group = group.len() > 1;
-        // Keep parent-group tab closes on the existing server confirmation path.
-        if tab_id.is_some() && closes_group {
+        let relocating = relocate_to.is_some();
+        // Keep parent-group tab closes on the existing server confirmation path. A relocation
+        // arrives here from that very path, so it keeps its confirmation.
+        if tab_id.is_some() && closes_group && relocate_to.is_none() {
             return false;
         }
         let tab_target = if let Some(tab_id) = tab_id {
@@ -1219,6 +1259,7 @@ impl ClientShellState {
                 tab_id,
                 workspace,
                 pane_id: None,
+                relocate_to_workspace_id: relocate_to,
             })
         } else {
             None
@@ -1248,12 +1289,18 @@ impl ClientShellState {
                 workspace_id,
                 close_group: closes_group,
                 tab_target,
-                title: if closes_group {
+                title: if relocating {
+                    "Move tab and close workspace?".to_owned()
+                } else if closes_group {
                     "Close worktree group?".to_owned()
                 } else {
                     "Close workspace?".to_owned()
                 },
-                detail: format!("{} — {scope}", workspace.label),
+                detail: if relocating {
+                    format!("{} — moving this tab empties it", workspace.label)
+                } else {
+                    format!("{} — {scope}", workspace.label)
+                },
             },
         ));
         true

@@ -102,8 +102,9 @@ pub(super) struct ShellHitMap {
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
-    pub(super) agents: Vec<(Rect, String)>,
-    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
+    /// Agent rows with the pane they run in and the tab that pane belongs to.
+    pub(super) agents: Vec<(Rect, String, String)>,
+    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String, String)>,
     /// Grouped agent panel space headers and their collapse keys.
     pub(super) agent_groups: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
@@ -190,11 +191,133 @@ pub(super) struct ClientWorkspacePress {
     pub(super) start_row: u16,
 }
 
+pub(super) struct ClientAgentPress {
+    pub(super) pane_id: String,
+    pub(super) tab_id: String,
+    pub(super) workspace_id: String,
+    pub(super) start_column: u16,
+    pub(super) start_row: u16,
+}
+
 pub(super) struct ClientTabPress {
     pub(super) tab_id: String,
     pub(super) workspace_id: String,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
+}
+
+/// Where a reorder drag would put an agent row inside its own group: the row it reached and
+/// the side it comes to rest on, plus the frame row its insertion line marks. The landing is
+/// named by its pane, so a scrolled panel cannot shift it.
+pub(super) struct ClientAgentReorder {
+    pub(super) landing_pane_id: String,
+    pub(super) below: bool,
+    pub(super) indicator_row: u16,
+}
+
+/// The order the owner dragged agent rows into, per machine and space. It is client-local
+/// presentation: the panel reads it, the server never learns about it. An owner who never
+/// reordered a row keeps it empty, which is the only check an ordinary frame pays.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ClientManualAgentOrder(HashMap<ClientEndpointId, HashMap<String, Vec<String>>>);
+
+impl ClientManualAgentOrder {
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(super) fn group(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        workspace_id: &str,
+    ) -> Option<&[String]> {
+        if self.0.is_empty() {
+            return None;
+        }
+        self.0
+            .get(endpoint_id)?
+            .get(workspace_id)
+            .map(Vec::as_slice)
+    }
+
+    pub(super) fn set_group(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        workspace_id: &str,
+        pane_ids: Vec<String>,
+    ) {
+        self.0
+            .entry(endpoint_id.clone())
+            .or_default()
+            .insert(workspace_id.to_owned(), pane_ids);
+    }
+
+    /// Drop every arrangement, which is how the owner leaves manual ordering behind.
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub(super) fn restore(saved: Vec<preferences::ClientAgentGroupOrder>) -> Self {
+        let mut groups = HashMap::<ClientEndpointId, HashMap<String, Vec<String>>>::new();
+        for group in saved {
+            let endpoint_id = match group.profile_id {
+                Some(profile_id) => match crate::client::endpoint::ProfileId::parse(profile_id) {
+                    Ok(profile_id) => ClientEndpointId::Ssh(profile_id),
+                    Err(_) => continue,
+                },
+                None => ClientEndpointId::Local,
+            };
+            groups
+                .entry(endpoint_id)
+                .or_default()
+                .insert(group.workspace_id, group.pane_ids);
+        }
+        Self(groups)
+    }
+
+    /// The arrangements in a stable order, so the preferences file does not churn.
+    pub(super) fn saved(&self) -> Vec<preferences::ClientAgentGroupOrder> {
+        let mut saved = self
+            .0
+            .iter()
+            .flat_map(|(endpoint_id, groups)| {
+                let profile_id = match endpoint_id {
+                    ClientEndpointId::Local => None,
+                    ClientEndpointId::Ssh(profile_id) => Some(profile_id.to_string()),
+                };
+                groups
+                    .iter()
+                    .filter(|(_, pane_ids)| !pane_ids.is_empty())
+                    .map(
+                        move |(workspace_id, pane_ids)| preferences::ClientAgentGroupOrder {
+                            profile_id: profile_id.clone(),
+                            workspace_id: workspace_id.clone(),
+                            pane_ids: pane_ids.clone(),
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
+        saved.sort_by(|left, right| {
+            (&left.profile_id, &left.workspace_id).cmp(&(&right.profile_id, &right.workspace_id))
+        });
+        saved
+    }
+}
+
+/// How the agents panel orders its rows: its sort mode, and the arrangements the owner
+/// dragged its groups into, which win for the groups that have one.
+#[derive(Clone, Copy)]
+pub(super) struct AgentPanelOrdering<'a> {
+    pub(super) sort: crate::config::AgentPanelSortConfig,
+    pub(super) manual: &'a ClientManualAgentOrder,
+}
+
+/// What an armed drag shows while it is in flight: the name of the thing being carried and
+/// the pointer cell it follows. The name is resolved once, when the drag arms, so no frame
+/// repeats the projection lookup.
+pub(super) struct ClientDragCarry {
+    pub(super) label: String,
+    pub(super) pointer: (u16, u16),
 }
 
 pub(super) enum ClientChromeDrag {
@@ -222,6 +345,23 @@ pub(super) enum ClientChromeDrag {
         tab_id: String,
         workspace_id: String,
         insert_index: Option<usize>,
+        /// Space row under the pointer once the drag left the tab bar. It relocates the tab
+        /// to another space instead of reordering it in place.
+        workspace_target: Option<String>,
+        carry: ClientDragCarry,
+    },
+    /// An agent row on its way to another space. The pane it runs in lands there as a new
+    /// tab, so the panes that share its current tab stay where they are.
+    AgentPane {
+        pane_id: String,
+        tab_id: String,
+        workspace_id: String,
+        /// Space row under the pointer, when it belongs to the machine on display.
+        workspace_target: Option<String>,
+        /// Where the row would land inside its own group when the pointer is over the agents
+        /// panel instead of a space row. A space row wins, so the two never both apply.
+        reorder: Option<ClientAgentReorder>,
+        carry: ClientDragCarry,
     },
     Workspace {
         source_workspace_id: String,
@@ -597,6 +737,9 @@ pub(super) struct ClientTabCloseConfirmation {
     pub(super) pane_id: Option<String>,
     pub(super) tab_id: String,
     pub(super) workspace: WorkspaceNavigationTarget,
+    /// Space the confirmed tab moves to, when the confirmation came from a relocation that
+    /// would close the space the tab leaves behind.
+    pub(super) relocate_to_workspace_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -673,6 +816,11 @@ pub(super) enum PendingEndpointKind {
     WorktreeOpen,
     WorktreeRemove {
         forced: bool,
+    },
+    TabRelocate {
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
     },
     SelectionCopy,
     PaneScroll {
@@ -919,8 +1067,10 @@ pub(crate) struct ClientShellState {
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
+    pub(super) agent_press: Option<ClientAgentPress>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
+    pub(super) manual_agent_order: ClientManualAgentOrder,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1102,8 +1252,10 @@ impl ClientShellState {
             chrome_drag: None,
             workspace_press: None,
             tab_press: None,
+            agent_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
+            manual_agent_order: ClientManualAgentOrder::restore(preferences.agent_group_order),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1295,6 +1447,7 @@ impl ClientShellState {
         self.chrome_drag = None;
         self.workspace_press = None;
         self.tab_press = None;
+        self.agent_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
         self.tab_scroll = 0;
@@ -1748,6 +1901,7 @@ impl ClientShellState {
             self.chrome_drag = None;
             self.workspace_press = None;
             self.tab_press = None;
+            self.agent_press = None;
             if self.pane_mouse_gesture.as_ref().is_some_and(|gesture| {
                 gesture.hit.popup && previous_popup.as_deref() == Some(gesture.hit.pane_id.as_str())
             }) {

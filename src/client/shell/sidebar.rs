@@ -51,6 +51,8 @@ pub(crate) fn render_collapsed_sidebar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     selected_workspace_id: Option<&str>,
     hits: &mut ShellHitMap,
 ) {
@@ -129,7 +131,7 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, ordering, endpoint_id)
         .into_iter()
         .take(detail_content.height as usize)
         .enumerate()
@@ -170,7 +172,7 @@ pub(crate) fn render_collapsed_sidebar(
             status_icon(agent.agent_status, config.status_indicators),
             Style::default().fg(status_color(agent.agent_status, palette)),
         );
-        hits.agents.push((rect, pane_id));
+        hits.agents.push((rect, pane_id, agent.tab_id.clone()));
     }
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
         Rect::default()
@@ -336,7 +338,10 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        if selected {
+        // A tab or agent pane held over this space owns its background until the drop resolves.
+        if state.drop_target_workspace_id == Some(workspace.workspace_id.as_str()) {
+            buffer.set_style(rect, Style::default().bg(palette.surface1));
+        } else if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
@@ -413,6 +418,8 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        state.agent_ordering(config),
+        state.active_endpoint_id,
         state.agent_scroll,
         state.agents_section_collapsed,
         hits,
@@ -442,12 +449,20 @@ fn render_grouped_agent_sidebar(
     let view_label = snapshot.agent_view_label.as_deref();
     // The agent tree is the whole sidebar here, so there is no section above to take its rows and
     // the header carries no fold affordance.
+    let ordering = state.agent_ordering(config);
     if !agent_sidebar::render_agent_panel_header(
-        buffer, content, view_label, config, hits, false, None,
+        buffer,
+        content,
+        view_label,
+        config,
+        !ordering.manual.is_empty(),
+        hits,
+        false,
+        None,
     ) {
         return;
     }
-    let agents = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    let agents = super::ordered_agent_pane_ids(snapshot, ordering, state.active_endpoint_id)
         .iter()
         .filter_map(|pane_id| {
             snapshot
@@ -482,6 +497,9 @@ fn render_grouped_agent_sidebar(
         config,
         state.agent_scroll,
         state.selected_workspace_id,
+        state
+            .drop_target_workspace_id
+            .map(|workspace_id| (state.active_endpoint_id, workspace_id)),
         false,
         hits,
     );

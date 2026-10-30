@@ -1,5 +1,22 @@
 use super::*;
 
+/// One agent group's order with `pane_id` moved beside the row a reorder drag took it to.
+/// `None` when either row is no longer in the group, which is how a stale drop is dropped.
+fn reordered_group(
+    group: &[String],
+    pane_id: &str,
+    reorder: &ClientAgentReorder,
+) -> Option<Vec<String>> {
+    let source = group.iter().position(|candidate| candidate == pane_id)?;
+    let mut arranged = group.to_vec();
+    let row = arranged.remove(source);
+    let landing = arranged
+        .iter()
+        .position(|candidate| *candidate == reorder.landing_pane_id)?;
+    arranged.insert(landing + usize::from(reorder.below), row);
+    Some(arranged)
+}
+
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
@@ -847,6 +864,21 @@ impl ClientShellState {
                 };
                 return (repaint, Vec::new());
             }
+            PendingEndpointKind::TabRelocate {
+                tab_id,
+                source_workspace_id,
+                target_workspace_id,
+            } => {
+                return (
+                    self.complete_tab_relocate(
+                        tab_id,
+                        source_workspace_id,
+                        target_workspace_id,
+                        result,
+                    ),
+                    Vec::new(),
+                );
+            }
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
@@ -872,6 +904,272 @@ impl ClientShellState {
             Err(_) => true,
         };
         (repaint, Vec::new())
+    }
+
+    /// Put a dragged agent row beside the row it was taken to and keep that arrangement from
+    /// then on. Presentation only: it stays in the client's own preferences and never reaches
+    /// the machine the agents run on. A drop that leaves the group as it was writes nothing.
+    pub(super) fn reorder_agent_row(
+        &mut self,
+        pane_id: &str,
+        workspace_id: &str,
+        reorder: &ClientAgentReorder,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let mut group = super::agent_sidebar::ordered_agent_pane_ids(
+            snapshot,
+            self.agent_panel_ordering(),
+            &self.active_endpoint_id,
+        );
+        group.retain(|candidate| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.pane_id == *candidate && agent.workspace_id == workspace_id)
+        });
+        let arranged = reordered_group(&group, pane_id, reorder);
+        if arranged.as_deref() == Some(group.as_slice()) {
+            return;
+        }
+        let Some(arranged) = arranged else {
+            return;
+        };
+        let endpoint_id = self.active_endpoint_id.clone();
+        self.manual_agent_order
+            .set_group(&endpoint_id, workspace_id, arranged);
+        self.persist_chrome_preferences(outcome);
+        outcome.repaint = true;
+    }
+
+    /// Move an agent's pane into a new tab of another space on the machine on display. The
+    /// panes that share its tab stay in place, so only a tab the pane leaves empty hands its
+    /// user-given name over; a positional tab number is left behind to be renumbered.
+    pub(super) fn request_agent_pane_move(
+        &mut self,
+        pane_id: String,
+        tab_id: String,
+        target_workspace_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let resolved = snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == pane_id && pane.tab_id == tab_id)
+            && snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == target_workspace_id);
+        if !resolved {
+            return;
+        }
+        // A tab's name describes the work in it, not the container, so the pane carries the name
+        // along even when siblings stay behind and keep it too. An auto-named tab has nothing but
+        // its position to offer, which would be meaningless in another workspace's numbering.
+        let label = snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id && tab.custom_label)
+            .map(|tab| tab.label.clone());
+        self.push_endpoint_method(
+            crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+                pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some(target_workspace_id),
+                    label,
+                },
+                focus: true,
+            }),
+            outcome,
+        );
+    }
+
+    /// Move a whole tab to another space of the machine on display. `confirmed` carries the
+    /// owner's answer to the confirmation a relocation that empties the source space needs.
+    pub(super) fn request_tab_relocate(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+        confirmed: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        let resolved = self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .tabs
+                .iter()
+                .any(|tab| tab.tab_id == tab_id && tab.workspace_id == source_workspace_id)
+                && snapshot
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.workspace_id == target_workspace_id)
+        });
+        if !resolved {
+            return;
+        }
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::TabRelocate(crate::api::schema::TabRelocateParams {
+                tab_id: tab_id.clone(),
+                workspace_id: target_workspace_id.clone(),
+                insert_index: None,
+                focus: true,
+                confirm_source_close: confirmed,
+            }),
+            PendingEndpointKind::TabRelocate {
+                tab_id,
+                source_workspace_id,
+                target_workspace_id,
+            },
+            outcome,
+        );
+    }
+
+    fn complete_tab_relocate(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target_workspace_id: String,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        match result {
+            Ok(crate::api::schema::ResponseResult::TabRelocated {
+                tab,
+                tabs,
+                insert_index,
+                closed_workspace_id,
+            }) => self.apply_tab_relocated(&tab_id, tab, &tabs, insert_index, closed_workspace_id),
+            Ok(_) => {
+                self.set_endpoint_error("endpoint returned an unexpected tab relocate result");
+                true
+            }
+            Err(error) if error.code.as_deref() == Some("confirmation_required") => {
+                // A source space that has already gone has nothing left to confirm, so it
+                // owes the user the refusal instead of an unanswerable question.
+                if !self.open_tab_relocate_confirmation(
+                    tab_id,
+                    source_workspace_id,
+                    target_workspace_id,
+                ) {
+                    self.push_endpoint_notice(
+                        ClientEndpointNoticeKind::Rejected,
+                        "tab.relocate:confirmation_required",
+                        "Action rejected",
+                        error.message,
+                    );
+                }
+                true
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Fold a finished relocation into the local projection. The moved tab's public id and the
+    /// ids of the tabs it displaces all change, so the target space takes the authoritative
+    /// list the server returned; an emptied source space leaves the sidebar with it.
+    fn apply_tab_relocated(
+        &mut self,
+        source_tab_id: &str,
+        tab: crate::api::schema::TabInfo,
+        tabs: &[crate::api::schema::TabInfo],
+        insert_index: usize,
+        closed_workspace_id: Option<String>,
+    ) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref_mut() else {
+            return false;
+        };
+        if let Some(position) = snapshot
+            .tabs
+            .iter()
+            .position(|entry| entry.tab_id == source_tab_id)
+        {
+            let mut moved = snapshot.tabs.remove(position);
+            moved.workspace_id = tab.workspace_id.clone();
+            let landing = snapshot
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.workspace_id == tab.workspace_id)
+                .map(|(index, _)| index)
+                .nth(insert_index)
+                .unwrap_or(snapshot.tabs.len());
+            snapshot.tabs.insert(landing, moved);
+            let renames = snapshot
+                .tabs
+                .iter()
+                .filter(|entry| entry.workspace_id == tab.workspace_id)
+                .zip(tabs)
+                .filter(|(entry, info)| entry.tab_id != info.tab_id)
+                .map(|(entry, info)| (entry.tab_id.clone(), info.tab_id.clone()))
+                .collect::<Vec<_>>();
+            for pane in &mut snapshot.panes {
+                if pane.tab_id == source_tab_id {
+                    pane.workspace_id = tab.workspace_id.clone();
+                }
+                if let Some((_, renamed)) = renames.iter().find(|(old, _)| *old == pane.tab_id) {
+                    pane.tab_id = renamed.clone();
+                }
+            }
+            for agent in &mut snapshot.agents {
+                if agent.tab_id == source_tab_id {
+                    agent.workspace_id = tab.workspace_id.clone();
+                }
+                if let Some((_, renamed)) = renames.iter().find(|(old, _)| *old == agent.tab_id) {
+                    agent.tab_id = renamed.clone();
+                }
+            }
+            for (entry, info) in snapshot
+                .tabs
+                .iter_mut()
+                .filter(|entry| entry.workspace_id == tab.workspace_id)
+                .zip(tabs)
+            {
+                entry.tab_id = info.tab_id.clone();
+                entry.number = info.number;
+                entry.focused = info.focused;
+                entry.agent_status = info.agent_status;
+            }
+        }
+        if tab.focused {
+            snapshot.focused_workspace_id = Some(tab.workspace_id.clone());
+            snapshot.focused_tab_id = Some(tab.tab_id.clone());
+            for workspace in &mut snapshot.workspaces {
+                workspace.focused = workspace.workspace_id == tab.workspace_id;
+                if workspace.focused {
+                    workspace.active_tab_id = tab.tab_id.clone();
+                }
+            }
+        }
+        if let Some(closed) = closed_workspace_id.as_deref() {
+            snapshot
+                .workspaces
+                .retain(|workspace| workspace.workspace_id != closed);
+            snapshot.tabs.retain(|entry| entry.workspace_id != closed);
+            snapshot.panes.retain(|pane| pane.workspace_id != closed);
+            snapshot.agents.retain(|agent| agent.workspace_id != closed);
+            let active_endpoint_id = self.active_endpoint_id.clone();
+            if self
+                .navigate_workspace_id
+                .as_ref()
+                .is_some_and(|target| target.matches(&active_endpoint_id, closed))
+            {
+                self.navigate_workspace_id = None;
+            }
+            if self
+                .pending_workspace_highlight
+                .as_ref()
+                .is_some_and(|pending| pending.target.matches(&active_endpoint_id, closed))
+            {
+                self.pending_workspace_highlight = None;
+            }
+        }
+        self.reveal_workspace(&tab.workspace_id);
+        self.reveal_focused_tab = true;
+        true
     }
 
     pub(super) fn endpoint_method_for_action(
@@ -909,7 +1207,8 @@ impl ClientShellState {
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.agent_panel_ordering(),
+                    &self.active_endpoint_id,
                 );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
@@ -918,7 +1217,8 @@ impl ClientShellState {
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.agent_panel_ordering(),
+                    &self.active_endpoint_id,
                 );
                 if agents.is_empty() {
                     return None;
@@ -940,7 +1240,7 @@ impl ClientShellState {
                     .hits
                     .agents
                     .iter()
-                    .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
+                    .any(|(_, visible_pane_id, _)| visible_pane_id == &pane_id)
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }

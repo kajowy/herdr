@@ -4450,6 +4450,43 @@
           ],
           "type": "object"
         },
+        "TabRelocateParams": {
+          "description": "Move a whole tab to another workspace on the same server.",
+          "properties": {
+            "confirm_source_close": {
+              "default": false,
+              "description": "Proceed although the relocation empties, and therefore closes, the\nworkspace the tab leaves behind. Without it such a relocation is\nrefused with `confirmation_required` while `ui.confirm_close` is on.",
+              "type": "boolean"
+            },
+            "focus": {
+              "default": false,
+              "description": "Switch the view to the moved tab in its new workspace.",
+              "type": "boolean"
+            },
+            "insert_index": {
+              "description": "Position among the target workspace's tabs, clamped to the end. Omit to\nappend.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "description": "Tab to relocate, in the workspace it currently lives in.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "description": "Workspace the tab moves to. It must differ from the tab's current\nworkspace; reordering inside one workspace stays `tab.move`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "TabRenameParams": {
           "properties": {
             "label": {
@@ -5455,6 +5492,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.relocate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabRelocateParams"
             }
           },
           "required": [
@@ -9772,6 +9825,45 @@
               "required": [
                 "type",
                 "tabs"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "closed_workspace_id": {
+                  "description": "Public id of the source workspace when the move emptied and closed it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "insert_index": {
+                  "description": "Index the moved tab occupies in the target workspace.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "tab": {
+                  "$ref": "#/schemas/success_response/$defs/TabInfo",
+                  "description": "The moved tab as it exists in its new workspace."
+                },
+                "tabs": {
+                  "description": "Authoritative tab list of the target workspace after the move.",
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/TabInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "tab_relocated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "tab",
+                "tabs",
+                "insert_index"
               ],
               "type": "object"
             },

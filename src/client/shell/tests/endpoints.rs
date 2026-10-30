@@ -72,8 +72,16 @@ fn current_workspace_view() -> crate::api::schema::AgentViewSetParams {
     }
 }
 
-fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+pub(super) fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
+    state_with_remote_config(ClientShellConfig::from_config(&Config::default()))
+}
+
+/// Two online machines on a caller-chosen client config, so a test can run the owner's own
+/// chrome preferences and sort mode through the aggregate sidebar.
+pub(super) fn state_with_remote_config(
+    config: ClientShellConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    let mut state = ClientShellState::new(config);
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
@@ -437,7 +445,7 @@ fn agent_navigation_reveals_offscreen_targets() {
             .hits
             .endpoint_agents
             .iter()
-            .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id }));
+            .any(|(_, endpoint, pane, _)| { endpoint == &endpoint_id && pane == pane_id }));
 
         let mut outcome = ClientShellInput::default();
         assert!(state.handle_endpoint_navigation(action, &mut outcome));
@@ -451,7 +459,7 @@ fn agent_navigation_reveals_offscreen_targets() {
                 .hits
                 .endpoint_agents
                 .iter()
-                .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id }),
+                .any(|(_, endpoint, pane, _)| { endpoint == &endpoint_id && pane == pane_id }),
             "{action:?} must reveal the selected agent"
         );
     }
@@ -511,7 +519,7 @@ fn agent_navigation_reveals_target_using_destination_sort() {
         .hits
         .endpoint_agents
         .iter()
-        .any(|(_, endpoint, pane)| { endpoint == &remote && pane == "pane_8" }));
+        .any(|(_, endpoint, pane, _)| { endpoint == &remote && pane == "pane_8" }));
 }
 
 #[test]
@@ -541,11 +549,11 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
 #[test]
 fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let (mut state, _) = state_with_scrollable_agents();
-    let (_, endpoint_id, pane_id) = state.hits.endpoint_agents[1].clone();
+    let (_, endpoint_id, pane_id, _) = state.hits.endpoint_agents[1].clone();
     let targets = super::super::aggregate_navigation::online_agent_targets(
         &state.endpoints,
         &state.active_endpoint_id,
-        state.config.agent_panel_sort,
+        state.agent_panel_ordering(),
     );
     let index = targets
         .iter()
@@ -565,9 +573,9 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
     let (mut state, remote) = state_with_scrollable_agents();
     for endpoint_id in [remote.clone(), ClientEndpointId::Local, remote] {
         let visible = state.hits.endpoint_agents.clone();
-        let (rect, _, pane_id) = visible
+        let (rect, _, pane_id, _) = visible
             .iter()
-            .find(|(_, endpoint, _)| endpoint == &endpoint_id)
+            .find(|(_, endpoint, _, _)| endpoint == &endpoint_id)
             .expect("destination agent remains visible");
         let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -609,11 +617,11 @@ fn local_agent_click_can_cancel_a_pending_remote_switch() {
             state.mark_endpoint_disconnected(&ClientEndpointId::Local);
         }
         state.compose(100, 28).unwrap();
-        let (rect, _, pane_id) = state
+        let (rect, _, pane_id, _) = state
             .hits
             .endpoint_agents
             .iter()
-            .find(|(_, endpoint, _)| endpoint.is_local())
+            .find(|(_, endpoint, _, _)| endpoint.is_local())
             .unwrap()
             .clone();
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -1874,7 +1882,10 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
     let names = aggregate_navigation::aggregate_agent_rows(
         &state.endpoints,
         &state.active_endpoint_id,
-        crate::config::AgentPanelSortConfig::Priority,
+        AgentPanelOrdering {
+            sort: crate::config::AgentPanelSortConfig::Priority,
+            manual: &state.manual_agent_order,
+        },
     )
     .into_iter()
     .map(|row| row.agent.name.as_deref().expect("agent name"))
