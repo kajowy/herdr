@@ -73,7 +73,15 @@ fn current_workspace_view() -> crate::api::schema::AgentViewSetParams {
 }
 
 pub(super) fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state_with_remote_config(ClientShellConfig::from_config(&Config::default()))
+}
+
+/// Two online machines on a caller-chosen client config, so a test can run the owner's own
+/// chrome preferences and sort mode through the aggregate sidebar.
+pub(super) fn state_with_remote_config(
+    config: ClientShellConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    let mut state = ClientShellState::new(config);
     let profile = remote_profile();
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);

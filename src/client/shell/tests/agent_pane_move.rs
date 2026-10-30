@@ -43,8 +43,27 @@ fn agent_snapshot() -> ClientShellSnapshot {
     projected
 }
 
+/// Every machine a current server runs advertises the agent-view projection capability, so a
+/// panel gesture has to hold on the projection path the owner's client actually takes.
+fn support_agent_view_projection(state: &mut ClientShellState, remote: &ClientEndpointId) {
+    for endpoint_id in [&ClientEndpointId::Local, remote] {
+        state.set_endpoint_agent_view_projection_supported(endpoint_id, true);
+    }
+}
+
 fn agent_state(projected: ClientShellSnapshot) -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    agent_state_with_config(
+        projected,
+        ClientShellConfig::from_config(&Config::default()),
+    )
+}
+
+fn agent_state_with_config(
+    projected: ClientShellSnapshot,
+    config: ClientShellConfig,
+) -> ClientShellState {
+    let mut state = ClientShellState::new(config);
+    state.set_endpoint_agent_view_projection_supported(&ClientEndpointId::Local, true);
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("sidebar with agent rows");
@@ -489,8 +508,29 @@ fn endpoint_agent_row_drops_on_a_nested_space_row_of_its_own_machine() {
 /// sidebar -- a machines band, the active machine's spaces band, and the grouped agents panel
 /// under the divider. `ws_2` owns an agent of its own so it also reaches the grouped tree.
 fn grouped_flat_state() -> (ClientShellState, ClientEndpointId) {
-    let (mut state, endpoint_id) = super::endpoints::state_with_remote();
-    state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Grouped;
+    grouped_flat_state_with_preferences(&preferences_path("grouped-flat"))
+}
+
+/// The owner's grouped view on a preferences file of its own, so an arrangement can be
+/// dragged, written and read back in the layout they actually run. Every helper in this file
+/// routes through here, which keeps the owner's configuration -- not a permissive default --
+/// the one the panel gestures are proved against.
+fn grouped_flat_state_with_preferences(
+    path: &std::path::Path,
+) -> (ClientShellState, ClientEndpointId) {
+    aggregate_state_with_preferences(path, crate::config::AgentPanelSortConfig::Grouped)
+}
+
+/// The owner's two machines and flat sidebar on a chosen panel sort mode.
+fn aggregate_state_with_preferences(
+    path: &std::path::Path,
+    sort: crate::config::AgentPanelSortConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = sort;
+    let (mut state, endpoint_id) = super::endpoints::state_with_remote_config(
+        ClientShellConfig::from_config(&config).with_preferences_path(path.to_path_buf()),
+    );
     // The live client only ever sends what the machine advertises, so the gesture has to be
     // exercised against the real client-shell method list.
     state.set_endpoint_methods(Some(
@@ -499,10 +539,14 @@ fn grouped_flat_state() -> (ClientShellState, ClientEndpointId) {
             .map(|name| (*name).to_owned())
             .collect(),
     ));
+    support_agent_view_projection(&mut state, &endpoint_id);
     let mut remote = agent_snapshot();
     remote.boot_id = "remote-boot".into();
     remote.workspaces[0].label = "remote-workspace".into();
-    remote.agents = vec![agent("pane_r", "tab_1", "ws_1")];
+    remote.agents = vec![
+        agent("pane_r", "tab_1", "ws_1"),
+        agent("pane_r2", "tab_1", "ws_1"),
+    ];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     state.set_snapshot(Box::new(grouped_local_snapshot()));
     state
@@ -799,14 +843,11 @@ fn agent_state_with_preferences(
     projected: ClientShellSnapshot,
     path: &std::path::Path,
 ) -> ClientShellState {
-    let mut state = ClientShellState::new(
+    agent_state_with_config(
+        projected,
         ClientShellConfig::from_config(&Config::default())
             .with_preferences_path(path.to_path_buf()),
-    );
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-    state.compose(106, 30).expect("sidebar with agent rows");
-    state
+    )
 }
 
 /// Drag the row of `pane_id` onto the row of `onto` and drop it there.
@@ -1008,4 +1049,239 @@ fn an_agent_dropped_where_it_already_sits_writes_nothing() {
         source
     ));
     assert!(!path.exists(), "a drop in place keeps the panel unwritten");
+}
+
+/// The aggregate panel's agent rows for one machine, in the order it draws them.
+fn panel_pane_ids_for(state: &ClientShellState, endpoint_id: &ClientEndpointId) -> Vec<String> {
+    state
+        .hits
+        .endpoint_agents
+        .iter()
+        .filter(|(_, hit_endpoint_id, _, _)| hit_endpoint_id == endpoint_id)
+        .map(|(_, _, pane_id, _)| pane_id.clone())
+        .collect()
+}
+
+fn grouped_panel_pane_ids(state: &ClientShellState) -> Vec<String> {
+    panel_pane_ids_for(state, &ClientEndpointId::Local)
+}
+
+fn reorder_grouped_agent(
+    state: &mut ClientShellState,
+    pane_id: &str,
+    onto: &str,
+) -> ClientShellInput {
+    let source = grouped_agent_row(state, pane_id);
+    let target = grouped_agent_row(state, onto);
+    drag_agent_onto(state, source, target);
+    let release = release_at(state, target);
+    state
+        .compose(106, 40)
+        .expect("grouped sidebar after the reorder");
+    release
+}
+
+#[test]
+fn grouped_panel_agent_dragged_inside_its_group_reorders_the_rows_on_screen() {
+    let path = preferences_path("grouped-reorder");
+    let (mut state, _) = grouped_flat_state_with_preferences(&path);
+    assert_eq!(
+        grouped_panel_pane_ids(&state),
+        ["pane_1", "pane_1b", "pane_2", "pane_3"]
+    );
+
+    let release = reorder_grouped_agent(&mut state, "pane_2", "pane_1");
+    assert!(release.actions.is_empty(), "{:?}", release.actions);
+    assert_eq!(
+        grouped_panel_pane_ids(&state),
+        ["pane_2", "pane_1", "pane_1b", "pane_3"]
+    );
+
+    let (reloaded, _) = grouped_flat_state_with_preferences(&path);
+    assert_eq!(
+        grouped_panel_pane_ids(&reloaded),
+        ["pane_2", "pane_1", "pane_1b", "pane_3"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The owner's own preferences file: one entry without a `profile_id` for the local machine
+/// and one carrying the SSH profile, so both keys have to reach their own machine's rows.
+fn write_arrangements(path: &std::path::Path, profile_id: &str) {
+    std::fs::write(
+        path,
+        format!(
+            r#"{{
+  "agent_panel_sort": "grouped",
+  "agent_group_order": [
+    {{ "workspace_id": "ws_1", "pane_ids": ["pane_2", "pane_1", "pane_1b"] }},
+    {{ "profile_id": "{profile_id}", "workspace_id": "ws_1", "pane_ids": ["pane_r2", "pane_r"] }}
+  ]
+}}"#
+        ),
+    )
+    .expect("preferences file");
+}
+
+#[test]
+fn a_stored_arrangement_orders_the_grouped_rows_of_every_machine() {
+    let path = preferences_path("grouped-stored");
+    let profile_id = {
+        let (_, endpoint_id) = grouped_flat_state();
+        match &endpoint_id {
+            ClientEndpointId::Ssh(profile_id) => profile_id.to_string(),
+            ClientEndpointId::Local => panic!("remote machine"),
+        }
+    };
+    write_arrangements(&path, &profile_id);
+
+    let (state, endpoint_id) = grouped_flat_state_with_preferences(&path);
+    assert_eq!(
+        grouped_panel_pane_ids(&state),
+        ["pane_2", "pane_1", "pane_1b", "pane_3"]
+    );
+    assert_eq!(
+        panel_pane_ids_for(&state, &endpoint_id),
+        ["pane_r2", "pane_r"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_flat_list_of_two_machines_follows_the_arrangement_over_its_sort_mode() {
+    let path = preferences_path("flat-aggregate");
+    let (_, endpoint_id) = grouped_flat_state();
+    let ClientEndpointId::Ssh(profile_id) = &endpoint_id else {
+        panic!("remote machine");
+    };
+    write_arrangements(&path, &profile_id.to_string());
+
+    // Priority is the mode that reorders hardest, so an arranged group has to win over it
+    // while the machine it does not name keeps following it.
+    let (mut state, endpoint_id) =
+        aggregate_state_with_preferences(&path, crate::config::AgentPanelSortConfig::Priority);
+    state.compose(106, 60).expect("flat aggregate panel");
+    assert_eq!(
+        panel_pane_ids_for(&state, &ClientEndpointId::Local)[..3],
+        ["pane_2", "pane_1", "pane_1b"]
+    );
+    assert_eq!(
+        panel_pane_ids_for(&state, &endpoint_id),
+        ["pane_r2", "pane_r"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_grouped_machine_without_an_arrangement_still_follows_the_sort_mode() {
+    let path = preferences_path("grouped-untouched");
+    let (mut state, endpoint_id) = grouped_flat_state_with_preferences(&path);
+    reorder_grouped_agent(&mut state, "pane_2", "pane_1");
+
+    // The machine the arrangement never named keeps the order its snapshot arrives in.
+    assert_eq!(
+        panel_pane_ids_for(&state, &endpoint_id),
+        ["pane_r", "pane_r2"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_grouped_arrangement_outlives_agents_arriving_and_leaving() {
+    let path = preferences_path("grouped-arrivals");
+    let (mut state, _) = grouped_flat_state_with_preferences(&path);
+    reorder_grouped_agent(&mut state, "pane_2", "pane_1");
+
+    let mut projected = grouped_local_snapshot();
+    projected.agents.retain(|agent| agent.pane_id != "pane_1b");
+    let mut arrival = projected.panes[0].clone();
+    arrival.pane_id = "pane_5".into();
+    arrival.focused = false;
+    projected.panes.push(arrival);
+    projected.agents.push(agent("pane_5", "tab_1", "ws_1"));
+    state.set_snapshot(Box::new(projected));
+    state
+        .compose(106, 40)
+        .expect("grouped sidebar after the snapshot");
+
+    assert_eq!(
+        grouped_panel_pane_ids(&state),
+        ["pane_2", "pane_1", "pane_5", "pane_3"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_grouped_header_names_the_manual_order_and_clearing_it_drops_every_arrangement() {
+    let path = preferences_path("grouped-label");
+    let profile_id = {
+        let (_, endpoint_id) = grouped_flat_state();
+        match &endpoint_id {
+            ClientEndpointId::Ssh(profile_id) => profile_id.to_string(),
+            ClientEndpointId::Local => panic!("remote machine"),
+        }
+    };
+    write_arrangements(&path, &profile_id);
+    let (mut state, endpoint_id) = grouped_flat_state_with_preferences(&path);
+    let header = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 40).expect("agents header");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        let row = state.hits.agent_sort_toggle.y;
+        (0..state.hits.agent_body.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>()
+    };
+    assert!(header(&mut state).contains("manual"));
+
+    let toggle = state.hits.agent_sort_toggle;
+    assert!(!toggle.is_empty(), "the sort label stays reachable");
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), toggle.x, toggle.y),
+        mouse(MouseEventKind::Up(MouseButton::Left), toggle.x, toggle.y),
+    ]);
+    state
+        .compose(106, 40)
+        .expect("sidebar after the sort change");
+    assert!(!header(&mut state).contains("manual"));
+    state
+        .compose(106, 40)
+        .expect("sidebar after the header read");
+    assert_eq!(
+        panel_pane_ids_for(&state, &endpoint_id),
+        ["pane_r", "pane_r2"],
+        "the other machine's arrangement goes with it"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_grouped_insertion_line_marks_the_edge_the_row_lands_against() {
+    let path = preferences_path("grouped-indicator");
+    let (mut state, _) = grouped_flat_state_with_preferences(&path);
+    let accent = state.config.palette.accent;
+    let source = grouped_agent_row(&state, "pane_1");
+    let target = grouped_agent_row(&state, "pane_2");
+    // The space headers draw an accent chevron of their own, so the line is read on the row
+    // it is expected on: the edge below the row the drag reached.
+    let landing = target.bottom();
+    let indicator = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 40).expect("grouped sidebar frame");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        buffer[(state.hits.agent_body.x, landing)].fg == accent
+    };
+    assert!(!indicator(&mut state));
+
+    drag_agent_onto(&mut state, source, target);
+    assert!(indicator(&mut state), "the insertion line is drawn");
+
+    release_at(&mut state, target);
+    state
+        .compose(106, 40)
+        .expect("grouped sidebar after the drop");
+    assert!(!indicator(&mut state));
+    assert_eq!(
+        grouped_panel_pane_ids(&state),
+        ["pane_1b", "pane_2", "pane_1", "pane_3"]
+    );
+    let _ = std::fs::remove_file(&path);
 }
