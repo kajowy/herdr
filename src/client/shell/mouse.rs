@@ -568,6 +568,79 @@ impl ClientShellState {
         })
     }
 
+    /// Where a reorder drag of `pane_id` would put it inside its own group: the row the
+    /// pointer reached and the side it lands on, with the frame row its insertion line marks.
+    /// A space row under the pointer owns the drop instead, and only the row's own group can
+    /// take it, so another group's rows and the empty panel are simply no target.
+    fn agent_reorder_target_at(
+        &self,
+        point: (u16, u16),
+        pane_id: &str,
+        workspace_id: &str,
+        space_target: bool,
+    ) -> Option<ClientAgentReorder> {
+        if space_target || !super::contains(self.hits.agent_body, point) {
+            return None;
+        }
+        let rows = self.agent_group_rows(workspace_id);
+        let source = rows
+            .iter()
+            .position(|(_, candidate)| *candidate == pane_id)?;
+        let landing = rows
+            .iter()
+            .position(|(rect, _)| super::contains(*rect, point))?;
+        if landing == source {
+            return None;
+        }
+        let (rect, landing_pane_id) = rows[landing];
+        let below = landing > source;
+        // The line marks the edge the row comes to rest against: above the row the drag
+        // reached going up, below it going down.
+        let indicator_row = if below {
+            rect.bottom()
+                .min(self.hits.agent_body.bottom().saturating_sub(1))
+        } else {
+            rect.y
+        };
+        Some(ClientAgentReorder {
+            landing_pane_id: landing_pane_id.to_owned(),
+            below,
+            indicator_row,
+        })
+    }
+
+    /// The agents panel's rows for one space of the machine on display, in the order it draws
+    /// them. Only walked while a drag is in flight.
+    fn agent_group_rows(&self, workspace_id: &str) -> Vec<(Rect, &str)> {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return Vec::new();
+        };
+        let in_group = |pane_id: &str| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.pane_id == pane_id && agent.workspace_id == workspace_id)
+        };
+        let endpoint_rows = self
+            .hits
+            .endpoint_agents
+            .iter()
+            .filter(|(_, endpoint_id, pane_id, _)| {
+                *endpoint_id == self.active_endpoint_id && in_group(pane_id)
+            })
+            .map(|(rect, _, pane_id, _)| (*rect, pane_id.as_str()))
+            .collect::<Vec<_>>();
+        if !endpoint_rows.is_empty() {
+            return endpoint_rows;
+        }
+        self.hits
+            .agents
+            .iter()
+            .filter(|(_, pane_id, _)| in_group(pane_id))
+            .map(|(rect, pane_id, _)| (*rect, pane_id.as_str()))
+            .collect()
+    }
+
     /// Name the agent row shows, so a drag off it can say what the pointer is carrying.
     fn agent_carry_label(&self, pane_id: &str) -> String {
         self.snapshot
@@ -1309,16 +1382,28 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                Some(ClientChromeDrag::AgentPane { workspace_id, .. }) => {
-                    let (_, workspace_target) =
-                        self.tab_drop_targets_at(point, &workspace_id.clone());
+                Some(ClientChromeDrag::AgentPane {
+                    pane_id,
+                    workspace_id,
+                    ..
+                }) => {
+                    let (pane_id, workspace_id) = (pane_id.clone(), workspace_id.clone());
+                    let (_, workspace_target) = self.tab_drop_targets_at(point, &workspace_id);
+                    let reorder = self.agent_reorder_target_at(
+                        point,
+                        &pane_id,
+                        &workspace_id,
+                        workspace_target.is_some(),
+                    );
                     if let Some(ClientChromeDrag::AgentPane {
                         workspace_target: current,
+                        reorder: current_reorder,
                         carry,
                         ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = workspace_target;
+                        *current_reorder = reorder;
                         carry.pointer = point;
                     }
                     outcome.repaint = true;
@@ -1395,6 +1480,12 @@ impl ClientShellState {
                         press.workspace_id.clone(),
                     );
                     let (_, workspace_target) = self.tab_drop_targets_at(point, &workspace_id);
+                    let reorder = self.agent_reorder_target_at(
+                        point,
+                        &pane_id,
+                        &workspace_id,
+                        workspace_target.is_some(),
+                    );
                     let carry = ClientDragCarry {
                         label: self.agent_carry_label(&pane_id),
                         pointer: point,
@@ -1404,6 +1495,7 @@ impl ClientShellState {
                         tab_id,
                         workspace_id,
                         workspace_target,
+                        reorder,
                         carry,
                     });
                     outcome.repaint = true;
@@ -1476,6 +1568,10 @@ impl ClientShellState {
                                 target_workspace_id,
                                 outcome,
                             );
+                        } else if let Some(reorder) =
+                            self.agent_reorder_target_at(point, &pane_id, &workspace_id, false)
+                        {
+                            self.reorder_agent_row(&pane_id, &workspace_id, &reorder, outcome);
                         }
                         outcome.repaint = true;
                     }
@@ -2225,6 +2321,9 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {
+                    // The sort label is also the way out of manual ordering: taking the panel
+                    // to another sort mode drops every arrangement it was holding.
+                    self.manual_agent_order.clear();
                     self.config.agent_panel_sort = self.config.agent_panel_sort.next();
                     self.agent_panel_sort_manual = true;
                     self.agent_scroll = 0;

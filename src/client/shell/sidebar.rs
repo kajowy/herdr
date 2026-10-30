@@ -51,6 +51,8 @@ pub(crate) fn render_collapsed_sidebar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     selected_workspace_id: Option<&str>,
     hits: &mut ShellHitMap,
 ) {
@@ -129,7 +131,7 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, ordering, endpoint_id)
         .into_iter()
         .take(detail_content.height as usize)
         .enumerate()
@@ -416,6 +418,8 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        state.agent_ordering(config),
+        state.active_endpoint_id,
         state.agent_scroll,
         state.agents_section_collapsed,
         hits,
@@ -445,12 +449,20 @@ fn render_grouped_agent_sidebar(
     let view_label = snapshot.agent_view_label.as_deref();
     // The agent tree is the whole sidebar here, so there is no section above to take its rows and
     // the header carries no fold affordance.
+    let ordering = state.agent_ordering(config);
     if !agent_sidebar::render_agent_panel_header(
-        buffer, content, view_label, config, hits, false, None,
+        buffer,
+        content,
+        view_label,
+        config,
+        !ordering.manual.is_empty(),
+        hits,
+        false,
+        None,
     ) {
         return;
     }
-    let agents = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    let agents = super::ordered_agent_pane_ids(snapshot, ordering, state.active_endpoint_id)
         .iter()
         .filter_map(|pane_id| {
             snapshot

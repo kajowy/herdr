@@ -236,6 +236,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
+    /// Arrangements the owner dragged the agent groups into, which win over the sort mode.
+    pub(super) manual_agent_order: &'a ClientManualAgentOrder,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,
@@ -256,6 +258,16 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) workspace_drop_indicator_row: Option<u16>,
     /// The frame's reference time, so render stays pure and every row of one frame agrees.
     pub(super) now: std::time::Instant,
+}
+
+impl<'a> ShellRenderState<'a> {
+    /// How the agents panel orders its rows in this frame.
+    pub(super) fn agent_ordering(&self, config: &ClientShellConfig) -> AgentPanelOrdering<'a> {
+        AgentPanelOrdering {
+            sort: config.agent_panel_sort,
+            manual: self.manual_agent_order,
+        }
+    }
 }
 
 pub(super) fn render_shell(
@@ -301,6 +313,8 @@ pub(super) fn render_shell(
                 layout.sidebar,
                 snapshot,
                 config,
+                state.agent_ordering(config),
+                state.active_endpoint_id,
                 state
                     .selected_workspace_id
                     .map(|target| target.workspace_id.as_str()),

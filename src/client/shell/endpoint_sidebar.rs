@@ -215,6 +215,7 @@ pub(super) fn render_collapsed(
         state.endpoints,
         state.active_endpoint_id,
         config,
+        state.agent_ordering(config),
         hits,
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {

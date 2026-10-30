@@ -24,7 +24,8 @@ pub(super) struct AgentRow {
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
-    sort: crate::config::AgentPanelSortConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -40,7 +41,7 @@ pub(super) fn ordered_agent_pane_ids(
             .collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    if sort == crate::config::AgentPanelSortConfig::Priority {
+    if ordering.sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
                 std::cmp::Reverse(status_priority(agent.agent_status)),
@@ -48,10 +49,57 @@ pub(super) fn ordered_agent_pane_ids(
             )
         });
     }
-    agents
-        .into_iter()
+    let mut pane_ids = agents
+        .iter()
         .map(|agent| agent.pane_id.clone())
-        .collect()
+        .collect::<Vec<_>>();
+    apply_manual_agent_order(&mut pane_ids, &agents, ordering, endpoint_id);
+    pane_ids
+}
+
+/// Rearrange the rows of each group the owner dragged into an order of its own, leaving the
+/// slots that group occupies and every other group's rows where the sort mode put them.
+/// Agents the arrangement does not name keep their sorted order at the end of their group, so
+/// one arriving mid-session never reshuffles what the owner arranged, and one that left is
+/// simply absent. Costs nothing while no group has an arrangement.
+fn apply_manual_agent_order(
+    pane_ids: &mut [String],
+    agents: &[&crate::protocol::ClientShellAgent],
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
+) {
+    if ordering.manual.is_empty() {
+        return;
+    }
+    let mut groups = Vec::<(&str, Vec<usize>)>::new();
+    for (index, agent) in agents.iter().enumerate() {
+        match groups
+            .iter_mut()
+            .find(|(workspace_id, _)| *workspace_id == agent.workspace_id.as_str())
+        {
+            Some((_, slots)) => slots.push(index),
+            None => groups.push((agent.workspace_id.as_str(), vec![index])),
+        }
+    }
+    for (workspace_id, slots) in groups {
+        let Some(manual) = ordering.manual.group(endpoint_id, workspace_id) else {
+            continue;
+        };
+        let mut arranged = manual
+            .iter()
+            .filter(|pane_id| slots.iter().any(|slot| &pane_ids[*slot] == *pane_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        arranged.extend(
+            slots
+                .iter()
+                .map(|slot| pane_ids[*slot].clone())
+                .filter(|pane_id| !manual.contains(pane_id)),
+        );
+        for (slot, pane_id) in slots.into_iter().zip(arranged) {
+            pane_ids[slot] = pane_id;
+        }
+    }
 }
 
 pub(super) fn render_agent_panel(
@@ -59,6 +107,8 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     agent_scroll: &mut usize,
     collapsed: bool,
     hits: &mut ShellHitMap,
@@ -68,6 +118,7 @@ pub(super) fn render_agent_panel(
         area,
         snapshot.agent_view_label.as_deref(),
         config,
+        !ordering.manual.is_empty(),
         hits,
         true,
         Some(collapsed),
@@ -76,7 +127,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(snapshot, config, ordering, endpoint_id, None);
     render_agent_list(
         buffer,
         area,
@@ -102,6 +153,7 @@ pub(super) fn render_agent_panel_header(
     area: Rect,
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
+    manual_order: bool,
     hits: &mut ShellHitMap,
     separator: bool,
     fold: Option<bool>,
@@ -137,10 +189,16 @@ pub(super) fn render_agent_panel_header(
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-    let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
-        crate::config::AgentPanelSortConfig::Spaces => "spaces",
-        crate::config::AgentPanelSortConfig::Priority => "priority",
-        crate::config::AgentPanelSortConfig::Grouped => "grouped",
+    // An arrangement of the owner's own replaces the sort mode for the groups that have one,
+    // so the label says so and stays the control that leaves it behind.
+    let sort_label = agent_view_label.unwrap_or(if manual_order {
+        "manual"
+    } else {
+        match config.agent_panel_sort {
+            crate::config::AgentPanelSortConfig::Spaces => "spaces",
+            crate::config::AgentPanelSortConfig::Priority => "priority",
+            crate::config::AgentPanelSortConfig::Grouped => "grouped",
+        }
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -167,7 +225,7 @@ pub(super) fn render_agent_panel_header(
         sort_rect.width,
         sort_label,
         Style::default()
-            .fg(if agent_view_label.is_some() {
+            .fg(if agent_view_label.is_some() || manual_order {
                 config.palette.accent
             } else {
                 config.palette.overlay0
@@ -283,9 +341,11 @@ fn render_agent_list_body<T>(
 pub(super) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    ordered_agent_pane_ids(snapshot, ordering, endpoint_id)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
         .collect()

@@ -99,6 +99,17 @@ impl ClientShellState {
         let Some(mut composed) = frame.to_ratatui_buffer() else {
             return;
         };
+        if let Some((body, row)) = self.agent_reorder_indicator() {
+            render::put_text(
+                &mut composed,
+                body.x,
+                row,
+                body.width,
+                &"\u{2500}".repeat(body.width as usize),
+                Style::default().fg(self.config.palette.accent),
+            );
+            occlusion.cover(Rect::new(body.x, row, body.width, 1));
+        }
         if !source.is_empty() {
             composed.set_style(source, Style::default().add_modifier(Modifier::DIM));
             occlusion.cover(source);
@@ -117,6 +128,21 @@ impl ClientShellState {
         occlusion.cover(Rect::new(x, y, width, 1));
         let cursor = frame.cursor.clone();
         frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+    }
+
+    /// The agents-panel body and the row an insertion line marks while an agent row is being
+    /// dragged inside its own group. `None` for every other drag.
+    fn agent_reorder_indicator(&self) -> Option<(Rect, u16)> {
+        let Some(ClientChromeDrag::AgentPane {
+            reorder: Some(reorder),
+            ..
+        }) = self.chrome_drag.as_ref()
+        else {
+            return None;
+        };
+        let body = self.hits.agent_body;
+        (reorder.indicator_row >= body.y && reorder.indicator_row < body.bottom())
+            .then_some((body, reorder.indicator_row))
     }
 
     fn compose_unavailable(&mut self, cols: u16, rows: u16, now: std::time::Instant) -> FrameData {
@@ -160,6 +186,7 @@ impl ClientShellState {
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
+            manual_agent_order: &self.manual_agent_order,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
@@ -334,6 +361,7 @@ impl ClientShellState {
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
+                manual_agent_order: &self.manual_agent_order,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
@@ -730,6 +758,10 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 &self.config,
+                AgentPanelOrdering {
+                    sort: self.config.agent_panel_sort,
+                    manual: &self.manual_agent_order,
+                },
                 self.navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),

@@ -234,7 +234,7 @@ impl ClientShellState {
             let agents = super::aggregate_navigation::online_agent_targets(
                 &self.endpoints,
                 &self.active_endpoint_id,
-                self.config.agent_panel_sort,
+                self.agent_panel_ordering(),
             );
             if agents.is_empty() {
                 return true;

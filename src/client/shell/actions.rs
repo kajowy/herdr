@@ -1,5 +1,22 @@
 use super::*;
 
+/// One agent group's order with `pane_id` moved beside the row a reorder drag took it to.
+/// `None` when either row is no longer in the group, which is how a stale drop is dropped.
+fn reordered_group(
+    group: &[String],
+    pane_id: &str,
+    reorder: &ClientAgentReorder,
+) -> Option<Vec<String>> {
+    let source = group.iter().position(|candidate| candidate == pane_id)?;
+    let mut arranged = group.to_vec();
+    let row = arranged.remove(source);
+    let landing = arranged
+        .iter()
+        .position(|candidate| *candidate == reorder.landing_pane_id)?;
+    arranged.insert(landing + usize::from(reorder.below), row);
+    Some(arranged)
+}
+
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
@@ -889,6 +906,44 @@ impl ClientShellState {
         (repaint, Vec::new())
     }
 
+    /// Put a dragged agent row beside the row it was taken to and keep that arrangement from
+    /// then on. Presentation only: it stays in the client's own preferences and never reaches
+    /// the machine the agents run on. A drop that leaves the group as it was writes nothing.
+    pub(super) fn reorder_agent_row(
+        &mut self,
+        pane_id: &str,
+        workspace_id: &str,
+        reorder: &ClientAgentReorder,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let mut group = super::agent_sidebar::ordered_agent_pane_ids(
+            snapshot,
+            self.agent_panel_ordering(),
+            &self.active_endpoint_id,
+        );
+        group.retain(|candidate| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.pane_id == *candidate && agent.workspace_id == workspace_id)
+        });
+        let arranged = reordered_group(&group, pane_id, reorder);
+        if arranged.as_deref() == Some(group.as_slice()) {
+            return;
+        }
+        let Some(arranged) = arranged else {
+            return;
+        };
+        let endpoint_id = self.active_endpoint_id.clone();
+        self.manual_agent_order
+            .set_group(&endpoint_id, workspace_id, arranged);
+        self.persist_chrome_preferences(outcome);
+        outcome.repaint = true;
+    }
+
     /// Move an agent's pane into a new tab of another space on the machine on display. The
     /// panes that share its tab stay in place, so only a tab the pane leaves empty hands its
     /// user-given name over; a positional tab number is left behind to be renumbered.
@@ -1152,7 +1207,8 @@ impl ClientShellState {
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.agent_panel_ordering(),
+                    &self.active_endpoint_id,
                 );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
@@ -1161,7 +1217,8 @@ impl ClientShellState {
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.agent_panel_ordering(),
+                    &self.active_endpoint_id,
                 );
                 if agents.is_empty() {
                     return None;

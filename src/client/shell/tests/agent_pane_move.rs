@@ -760,3 +760,252 @@ fn grouped_panel_agent_pane_move_a_machine_cannot_take_is_refused_with_a_notice(
     assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Unsupported);
     assert_eq!(notice.key.code, "pane.move");
 }
+
+/// `agent_snapshot()` plus a second group: `pane_3` and `pane_4` run in `ws_2`.
+fn two_group_snapshot() -> ClientShellSnapshot {
+    let mut projected = agent_snapshot();
+    for pane_id in ["pane_3", "pane_4"] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.tab_id = "tab_3".into();
+        pane.workspace_id = "ws_2".into();
+        pane.focused = false;
+        projected.panes.push(pane);
+        projected.agents.push(agent(pane_id, "tab_3", "ws_2"));
+    }
+    projected
+}
+
+/// The panel's rows in the order it draws them.
+fn panel_pane_ids(state: &ClientShellState) -> Vec<String> {
+    state
+        .hits
+        .agents
+        .iter()
+        .map(|(_, pane_id, _)| pane_id.clone())
+        .collect()
+}
+
+fn preferences_path(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-agent-reorder-{name}-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
+fn agent_state_with_preferences(
+    projected: ClientShellSnapshot,
+    path: &std::path::Path,
+) -> ClientShellState {
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default())
+            .with_preferences_path(path.to_path_buf()),
+    );
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar with agent rows");
+    state
+}
+
+/// Drag the row of `pane_id` onto the row of `onto` and drop it there.
+fn reorder_agent(state: &mut ClientShellState, pane_id: &str, onto: &str) -> ClientShellInput {
+    let source = agent_row(state, pane_id);
+    let target = agent_row(state, onto);
+    drag_agent_onto(state, source, target);
+    let release = release_at(state, target);
+    state.compose(106, 30).expect("sidebar after the reorder");
+    release
+}
+
+#[test]
+fn agent_dragged_up_inside_its_group_reorders_the_panel() {
+    let path = preferences_path("up");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    assert_eq!(panel_pane_ids(&state), ["pane_1", "pane_1b", "pane_2"]);
+
+    let release = reorder_agent(&mut state, "pane_2", "pane_1");
+    assert!(release.actions.is_empty(), "{:?}", release.actions);
+    assert_eq!(panel_pane_ids(&state), ["pane_2", "pane_1", "pane_1b"]);
+
+    let reloaded = agent_state_with_preferences(agent_snapshot(), &path);
+    assert_eq!(panel_pane_ids(&reloaded), ["pane_2", "pane_1", "pane_1b"]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn agent_dragged_down_inside_its_group_reorders_the_panel() {
+    let path = preferences_path("down");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+
+    reorder_agent(&mut state, "pane_1", "pane_2");
+    assert_eq!(panel_pane_ids(&state), ["pane_1b", "pane_2", "pane_1"]);
+
+    let reloaded = agent_state_with_preferences(agent_snapshot(), &path);
+    assert_eq!(panel_pane_ids(&reloaded), ["pane_1b", "pane_2", "pane_1"]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_manual_order_outlives_agents_arriving_and_leaving() {
+    let path = preferences_path("arrivals");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    reorder_agent(&mut state, "pane_2", "pane_1");
+
+    let mut projected = agent_snapshot();
+    projected.agents.retain(|agent| agent.pane_id != "pane_1b");
+    let mut arrival = projected.panes[0].clone();
+    arrival.pane_id = "pane_5".into();
+    arrival.focused = false;
+    projected.panes.push(arrival);
+    projected.agents.push(agent("pane_5", "tab_1", "ws_1"));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar after the snapshot");
+
+    // The arrangement holds, the agent that left drops out, and the new one lands at the end.
+    assert_eq!(panel_pane_ids(&state), ["pane_2", "pane_1", "pane_5"]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_group_never_reordered_still_follows_the_sort_mode() {
+    let path = preferences_path("untouched-group");
+    let mut state = agent_state_with_preferences(two_group_snapshot(), &path);
+    reorder_agent(&mut state, "pane_2", "pane_1");
+
+    let mut projected = two_group_snapshot();
+    projected.agents.swap(3, 4);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar after the snapshot");
+
+    assert_eq!(
+        panel_pane_ids(&state),
+        ["pane_2", "pane_1", "pane_1b", "pane_4", "pane_3"]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn switching_the_sort_mode_clears_every_manual_order() {
+    let path = preferences_path("sort-escape");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    reorder_agent(&mut state, "pane_2", "pane_1");
+    let toggle = state.hits.agent_sort_toggle;
+    assert!(!toggle.is_empty(), "the sort label stays reachable");
+
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), toggle.x, toggle.y),
+        mouse(MouseEventKind::Up(MouseButton::Left), toggle.x, toggle.y),
+    ]);
+    state
+        .compose(106, 30)
+        .expect("sidebar after the sort change");
+    assert_eq!(panel_pane_ids(&state), ["pane_1", "pane_1b", "pane_2"]);
+
+    let reloaded = agent_state_with_preferences(agent_snapshot(), &path);
+    assert_eq!(panel_pane_ids(&reloaded), ["pane_1", "pane_1b", "pane_2"]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_sort_label_names_the_manual_order_that_replaced_it() {
+    let path = preferences_path("manual-label");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    let header = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).expect("agents header");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        let row = state.hits.agent_sort_toggle.y;
+        (0..state.hits.agent_body.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>()
+    };
+    assert!(header(&mut state).contains("spaces"));
+
+    reorder_agent(&mut state, "pane_2", "pane_1");
+    assert!(header(&mut state).contains("manual"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn an_agent_dropped_on_a_space_row_moves_its_pane_and_does_not_reorder() {
+    let path = preferences_path("space-row");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    let source = agent_row(&state, "pane_1");
+    let target = workspace_row(&state, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
+        panic!("pane move request, got {:?}", release.actions.len());
+    };
+    assert!(matches!(&request.method, Method::PaneMove(params) if params.pane_id == "pane_1"));
+    state.compose(106, 30).expect("sidebar after the drop");
+    assert_eq!(panel_pane_ids(&state), ["pane_1", "pane_1b", "pane_2"]);
+    assert!(!path.exists(), "a move writes no panel order");
+}
+
+#[test]
+fn an_agent_dragged_over_another_groups_rows_has_no_target() {
+    let path = preferences_path("cross-group");
+    let mut state = agent_state_with_preferences(two_group_snapshot(), &path);
+    let source = agent_row(&state, "pane_1");
+    let target = agent_row(&state, "pane_3");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    assert!(release.actions.is_empty());
+    state.compose(106, 30).expect("sidebar after the drop");
+    assert_eq!(
+        panel_pane_ids(&state),
+        ["pane_1", "pane_1b", "pane_2", "pane_3", "pane_4"]
+    );
+    assert!(!path.exists(), "no group takes a row from another");
+}
+
+#[test]
+fn the_insertion_indicator_shows_only_while_a_reorder_drag_is_live() {
+    let path = preferences_path("indicator");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    let source = agent_row(&state, "pane_2");
+    let target = agent_row(&state, "pane_1");
+    let accent = state.config.palette.accent;
+    let indicator = |state: &mut ClientShellState, row: u16| {
+        let frame = state.compose(106, 30).expect("sidebar frame");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        buffer[(state.hits.agent_body.x, row)].fg == accent
+    };
+    assert!(!indicator(&mut state, target.y));
+
+    drag_agent_onto(&mut state, source, target);
+    assert!(
+        indicator(&mut state, target.y),
+        "the insertion line is drawn"
+    );
+
+    release_at(&mut state, target);
+    assert!(!indicator(&mut state, target.y));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn an_agent_dropped_where_it_already_sits_writes_nothing() {
+    let path = preferences_path("in-place");
+    let mut state = agent_state_with_preferences(agent_snapshot(), &path);
+    let source = agent_row(&state, "pane_1b");
+
+    let release = reorder_agent(&mut state, "pane_1b", "pane_1b");
+    assert!(release.actions.is_empty());
+    assert_eq!(panel_pane_ids(&state), ["pane_1", "pane_1b", "pane_2"]);
+    assert!(!muted(
+        &state
+            .compose(106, 30)
+            .expect("sidebar after the drop")
+            .to_ratatui_buffer()
+            .expect("frame buffer"),
+        source
+    ));
+    assert!(!path.exists(), "a drop in place keeps the panel unwritten");
+}

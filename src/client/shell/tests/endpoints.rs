@@ -545,7 +545,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let targets = super::super::aggregate_navigation::online_agent_targets(
         &state.endpoints,
         &state.active_endpoint_id,
-        state.config.agent_panel_sort,
+        state.agent_panel_ordering(),
     );
     let index = targets
         .iter()
@@ -1874,7 +1874,10 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
     let names = aggregate_navigation::aggregate_agent_rows(
         &state.endpoints,
         &state.active_endpoint_id,
-        crate::config::AgentPanelSortConfig::Priority,
+        AgentPanelOrdering {
+            sort: crate::config::AgentPanelSortConfig::Priority,
+            manual: &state.manual_agent_order,
+        },
     )
     .into_iter()
     .map(|row| row.agent.name.as_deref().expect("agent name"))
