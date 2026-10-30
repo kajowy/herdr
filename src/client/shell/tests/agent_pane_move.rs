@@ -1,4 +1,6 @@
-use super::tab_relocate::{mouse, relocate_snapshot, workspace_row};
+use super::tab_relocate::{
+    carried_label, label_at, mouse, muted, relocate_snapshot, workspace_row,
+};
 use super::*;
 use crate::api::schema::{Method, PaneMoveDestination};
 use crossterm::event::{MouseButton, MouseEventKind};
@@ -294,6 +296,78 @@ fn agent_drop_target_row_highlights_only_while_the_drag_is_over_it() {
     assert_ne!(
         buffer[(target.x, target.y)].bg,
         state.config.palette.surface1
+    );
+}
+
+#[test]
+fn agent_drag_carries_its_label_and_mutes_the_row_it_leaves() {
+    let mut state = agent_state(agent_snapshot());
+    let source = agent_row(&state, "pane_1");
+    let target = workspace_row(&state, "ws_2");
+
+    let frame = state.compose(106, 30).expect("idle sidebar");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (source.x + 1, source.y), 8),
+        None
+    );
+    assert!(!muted(&buffer, source));
+
+    drag_agent_onto(&mut state, source, target);
+    let frame = state.compose(106, 30).expect("drag over the space row");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (target.x + 1, target.y), 8),
+        Some(" pane_1 ".into())
+    );
+    assert!(muted(&buffer, source));
+
+    release_at(&mut state, target);
+    let frame = state.compose(106, 30).expect("sidebar after the drop");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (target.x + 1, target.y), 8),
+        None
+    );
+    assert!(!muted(&buffer, source));
+}
+
+#[test]
+fn agent_press_without_movement_carries_nothing() {
+    let mut state = agent_state(agent_snapshot());
+    let source = agent_row(&state, "pane_1b");
+
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    )]);
+    let frame = state.compose(106, 30).expect("pressed agent row");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (source.x + 1, source.y), 9),
+        None
+    );
+    assert!(!muted(&buffer, source));
+}
+
+#[test]
+fn agent_drag_carry_stays_inside_the_frame_at_the_bottom_right_corner() {
+    let mut state = agent_state(agent_snapshot());
+    let source = agent_row(&state, "pane_1");
+    let target = workspace_row(&state, "ws_2");
+    drag_agent_onto(&mut state, source, target);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        105,
+        29,
+    )]);
+
+    let frame = state.compose(106, 30).expect("drag at the frame corner");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        label_at(&buffer, &state.config.palette, 98, 28, 8),
+        Some(" pane_1 ".into())
     );
 }
 

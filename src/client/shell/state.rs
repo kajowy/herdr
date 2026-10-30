@@ -206,6 +206,14 @@ pub(super) struct ClientTabPress {
     pub(super) start_row: u16,
 }
 
+/// What an armed drag shows while it is in flight: the name of the thing being carried and
+/// the pointer cell it follows. The name is resolved once, when the drag arms, so no frame
+/// repeats the projection lookup.
+pub(super) struct ClientDragCarry {
+    pub(super) label: String,
+    pub(super) pointer: (u16, u16),
+}
+
 pub(super) enum ClientChromeDrag {
     SidebarWidth,
     SidebarSection,
@@ -234,6 +242,7 @@ pub(super) enum ClientChromeDrag {
         /// Space row under the pointer once the drag left the tab bar. It relocates the tab
         /// to another space instead of reordering it in place.
         workspace_target: Option<String>,
+        carry: ClientDragCarry,
     },
     /// An agent row on its way to another space. The pane it runs in lands there as a new
     /// tab, so the panes that share its current tab stay where they are.
@@ -243,6 +252,7 @@ pub(super) enum ClientChromeDrag {
         workspace_id: String,
         /// Space row under the pointer, when it belongs to the machine on display.
         workspace_target: Option<String>,
+        carry: ClientDragCarry,
     },
     Workspace {
         source_workspace_id: String,

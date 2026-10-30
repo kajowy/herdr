@@ -369,7 +369,7 @@ fn agent_tab_label<'a>(
         .map(|tab| tab.label.as_str())
 }
 
-fn agent_display_label(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+pub(super) fn agent_display_label(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
     agent
         .display_agent
         .as_deref()

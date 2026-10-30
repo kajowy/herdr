@@ -568,6 +568,29 @@ impl ClientShellState {
         })
     }
 
+    /// Name the agent row shows, so a drag off it can say what the pointer is carrying.
+    fn agent_carry_label(&self, pane_id: &str) -> String {
+        self.snapshot
+            .as_deref()
+            .and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == pane_id)
+                    .and_then(super::agent_sidebar::agent_display_label)
+            })
+            .unwrap_or(pane_id)
+            .to_owned()
+    }
+
+    /// Name the tab bar shows, so a tab drag can say what the pointer is carrying.
+    fn tab_carry_label(&self, tab_id: &str) -> String {
+        self.snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
+            .map_or_else(|| tab_id.to_owned(), |tab| tab.label.clone())
+    }
+
     /// Space a grouped agent header under `point` stands for. The agent tree takes the whole
     /// sidebar in grouped mode, so there its headers are the only space rows a drop can reach.
     fn agent_group_drop_target_at(
@@ -1275,11 +1298,13 @@ impl ClientShellState {
                     if let Some(ClientChromeDrag::Tab {
                         insert_index: current,
                         workspace_target: current_workspace,
+                        carry,
                         ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = insert_index;
                         *current_workspace = workspace_target;
+                        carry.pointer = point;
                     }
                     outcome.repaint = true;
                     return;
@@ -1289,10 +1314,12 @@ impl ClientShellState {
                         self.tab_drop_targets_at(point, &workspace_id.clone());
                     if let Some(ClientChromeDrag::AgentPane {
                         workspace_target: current,
+                        carry,
                         ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = workspace_target;
+                        carry.pointer = point;
                     }
                     outcome.repaint = true;
                     return;
@@ -1340,11 +1367,16 @@ impl ClientShellState {
                     let (insert_index, workspace_target) =
                         self.tab_drop_targets_at(point, &workspace_id);
                     if insert_index.is_some() || workspace_target.is_some() {
+                        let carry = ClientDragCarry {
+                            label: self.tab_carry_label(&tab_id),
+                            pointer: point,
+                        };
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id,
                             workspace_id,
                             insert_index,
                             workspace_target,
+                            carry,
                         });
                         outcome.repaint = true;
                     }
@@ -1363,11 +1395,16 @@ impl ClientShellState {
                         press.workspace_id.clone(),
                     );
                     let (_, workspace_target) = self.tab_drop_targets_at(point, &workspace_id);
+                    let carry = ClientDragCarry {
+                        label: self.agent_carry_label(&pane_id),
+                        pointer: point,
+                    };
                     self.chrome_drag = Some(ClientChromeDrag::AgentPane {
                         pane_id,
                         tab_id,
                         workspace_id,
                         workspace_target,
+                        carry,
                     });
                     outcome.repaint = true;
                 }

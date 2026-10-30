@@ -55,6 +55,47 @@ pub(super) fn workspace_row(state: &ClientShellState, workspace_id: &str) -> Rec
         .rect
 }
 
+/// The cells of row `y` from column `x` as text.
+fn text_at(buffer: &Buffer, x: u16, y: u16, width: u16) -> String {
+    (x..x.saturating_add(width))
+        .map(|col| buffer[(col, y)].symbol())
+        .collect()
+}
+
+/// The carried drag label at (`x`, `y`), recognized by the accent background the sidebar
+/// gives the live thing. `None` when nothing is carried there.
+pub(super) fn label_at(
+    buffer: &Buffer,
+    palette: &Palette,
+    x: u16,
+    y: u16,
+    width: u16,
+) -> Option<String> {
+    (buffer[(x, y)].bg == palette.accent).then(|| text_at(buffer, x, y, width))
+}
+
+/// The carried drag label where a pointer at `pointer` puts it: one row below it, two
+/// columns to its right.
+pub(super) fn carried_label(
+    buffer: &Buffer,
+    palette: &Palette,
+    pointer: (u16, u16),
+    width: u16,
+) -> Option<String> {
+    label_at(
+        buffer,
+        palette,
+        pointer.0.saturating_add(2),
+        pointer.1.saturating_add(1),
+        width,
+    )
+}
+
+/// Whether the drag source at `rect` is drawn muted.
+pub(super) fn muted(buffer: &Buffer, rect: Rect) -> bool {
+    buffer[(rect.x, rect.y)].modifier.contains(Modifier::DIM)
+}
+
 /// Press the first tab and take the pointer off the press position, still inside the bar.
 fn begin_tab_drag(state: &mut ClientShellState) {
     let tab = state.hits.tabs[0].0;
@@ -71,10 +112,14 @@ fn begin_tab_drag(state: &mut ClientShellState) {
 }
 
 fn drag_onto(state: &mut ClientShellState, target: Rect) -> ClientShellInput {
+    drag_to(state, target.x + 1, target.y)
+}
+
+fn drag_to(state: &mut ClientShellState, column: u16, row: u16) -> ClientShellInput {
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Drag(MouseButton::Left),
-        target.x + 1,
-        target.y,
+        column,
+        row,
     )])
 }
 
@@ -429,6 +474,100 @@ fn tab_drop_target_row_highlights_only_while_a_tab_drag_is_over_it() {
     assert_ne!(
         buffer[(target.x, target.y)].bg,
         state.config.palette.surface1
+    );
+}
+
+#[test]
+fn tab_drag_carries_its_label_and_mutes_the_tab_it_leaves() {
+    let mut state = relocate_state();
+    let tab = state.hits.tabs[0].0;
+    let target = workspace_row(&state, "ws_2");
+
+    let frame = state.compose(106, 20).expect("idle tab bar");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (tab.x + 1, tab.y), 3),
+        None
+    );
+    assert!(!muted(&buffer, tab));
+
+    // A press alone is no drag: nothing is carried before the one-cell threshold.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        tab.x + 1,
+        tab.y,
+    )]);
+    let frame = state.compose(106, 20).expect("pressed tab");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (tab.x + 1, tab.y), 3),
+        None
+    );
+    assert!(!muted(&buffer, tab));
+
+    drag_onto(&mut state, target);
+    let frame = state.compose(106, 20).expect("drag over the space row");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (target.x + 1, target.y), 3),
+        Some(" 1 ".into())
+    );
+    assert!(muted(&buffer, tab));
+
+    release_at(&mut state, target);
+    let frame = state.compose(106, 20).expect("tab bar after the drop");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (target.x + 1, target.y), 3),
+        None
+    );
+    assert!(!muted(&buffer, tab));
+}
+
+/// A drag the pointer takes away from every target still carries its label, and a release
+/// there cancels it without leaving the label or the muted tab behind.
+#[test]
+fn tab_drag_carry_vanishes_when_the_drop_hits_no_target() {
+    let mut state = relocate_state();
+    let tab = state.hits.tabs[0].0;
+    let pane = state.hits.panes[0].inner_rect;
+    drag_first_tab_onto(&mut state, pane);
+    let frame = state.compose(106, 20).expect("drag over the pane surface");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (pane.x + 1, pane.y), 3),
+        Some(" 1 ".into())
+    );
+    assert!(muted(&buffer, tab));
+
+    let release = release_at(&mut state, pane);
+    assert!(release.actions.is_empty());
+    let frame = state.compose(106, 20).expect("tab bar after the cancel");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        carried_label(&buffer, &state.config.palette, (pane.x + 1, pane.y), 3),
+        None
+    );
+    assert!(!muted(&buffer, tab));
+}
+
+#[test]
+fn tab_drag_carry_truncates_a_long_label_and_stays_inside_the_frame() {
+    let mut state = relocate_state();
+    let mut projected = relocate_snapshot();
+    projected.tabs[0].label = "auto-impl TA-312 relocate the whole tab".into();
+    projected.tabs[0].custom_label = true;
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 20).expect("a long tab label");
+    begin_tab_drag(&mut state);
+    // The bottom-right corner: the label has to step left and up to stay in the frame.
+    drag_to(&mut state, 105, 19);
+
+    let frame = state.compose(106, 20).expect("drag at the frame corner");
+    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+    assert_eq!(
+        label_at(&buffer, &state.config.palette, 80, 18, 26),
+        Some(" auto-impl TA-312 reloca… ".into())
     );
 }
 
