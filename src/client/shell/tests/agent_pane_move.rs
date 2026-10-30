@@ -379,3 +379,280 @@ fn endpoint_agent_row_drops_on_a_nested_space_row_of_its_own_machine() {
                 )
     ));
 }
+
+/// The owner's grouped view: two online machines, grouped sort (their config's retired
+/// `agent_panel_scope` and their persisted chrome preference both select it), and the flat
+/// sidebar -- a machines band, the active machine's spaces band, and the grouped agents panel
+/// under the divider. `ws_2` owns an agent of its own so it also reaches the grouped tree.
+fn grouped_flat_state() -> (ClientShellState, ClientEndpointId) {
+    let (mut state, endpoint_id) = super::endpoints::state_with_remote();
+    state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Grouped;
+    // The live client only ever sends what the machine advertises, so the gesture has to be
+    // exercised against the real client-shell method list.
+    state.set_endpoint_methods(Some(
+        crate::server::client_commands::supported_client_shell_method_names()
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+    ));
+    let mut remote = agent_snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    remote.agents = vec![agent("pane_r", "tab_1", "ws_1")];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.set_snapshot(Box::new(grouped_local_snapshot()));
+    state
+        .compose(106, 40)
+        .expect("grouped agents under the spaces band");
+    (state, endpoint_id)
+}
+
+/// The active machine's snapshot with an agent in `ws_2` as well, so both spaces reach the
+/// grouped tree and either space can take a drop.
+fn grouped_local_snapshot() -> ClientShellSnapshot {
+    let mut projected = agent_snapshot();
+    let mut pane = projected.panes[0].clone();
+    pane.pane_id = "pane_3".into();
+    pane.tab_id = "tab_3".into();
+    pane.workspace_id = "ws_2".into();
+    pane.focused = false;
+    projected.panes.push(pane);
+    projected.agents.push(agent("pane_3", "tab_3", "ws_2"));
+    projected
+}
+
+fn grouped_agent_row(state: &ClientShellState, pane_id: &str) -> Rect {
+    state
+        .hits
+        .endpoint_agents
+        .iter()
+        .find(|(_, endpoint_id, hit_pane_id, _)| endpoint_id.is_local() && hit_pane_id == pane_id)
+        .unwrap_or_else(|| panic!("{pane_id} grouped agent row"))
+        .0
+}
+
+fn local_workspace_row(state: &ClientShellState, workspace_id: &str) -> Rect {
+    state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == workspace_id)
+        .unwrap_or_else(|| panic!("{workspace_id} row"))
+        .rect
+}
+
+fn grouped_space_header(
+    state: &ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    workspace_id: &str,
+) -> Rect {
+    let key = format!("agents:{workspace_id}");
+    state
+        .hits
+        .agent_groups
+        .iter()
+        .find(|(_, hit_endpoint_id, hit_key)| hit_endpoint_id == endpoint_id && *hit_key == key)
+        .unwrap_or_else(|| panic!("{workspace_id} space header"))
+        .0
+}
+
+fn moved_pane_target(release: &ClientShellInput) -> (String, Option<String>, Option<String>) {
+    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
+        panic!("pane move request, got {:?}", release.actions.len());
+    };
+    let Method::PaneMove(params) = &request.method else {
+        panic!("pane move method");
+    };
+    assert!(params.focus);
+    let PaneMoveDestination::NewTab {
+        workspace_id,
+        label,
+    } = &params.destination
+    else {
+        panic!("new tab destination");
+    };
+    (params.pane_id.clone(), workspace_id.clone(), label.clone())
+}
+
+#[test]
+fn grouped_panel_agent_drops_on_a_space_row_of_the_flat_sidebar() {
+    let (mut state, _) = grouped_flat_state();
+    let source = grouped_agent_row(&state, "pane_1");
+    let target = local_workspace_row(&state, "ws_2");
+
+    let drag = drag_agent_onto(&mut state, source, target);
+    assert!(drag.repaint);
+    let release = release_at(&mut state, target);
+    assert_eq!(
+        moved_pane_target(&release),
+        ("pane_1".into(), Some("ws_2".into()), None)
+    );
+}
+
+#[test]
+fn grouped_panel_agent_drops_on_a_space_header_of_its_own_machine() {
+    let (mut state, _) = grouped_flat_state();
+    let source = grouped_agent_row(&state, "pane_1");
+    let target = grouped_space_header(&state, &ClientEndpointId::Local, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    assert_eq!(
+        moved_pane_target(&release),
+        ("pane_1".into(), Some("ws_2".into()), None)
+    );
+}
+
+#[test]
+fn grouped_panel_agent_clicked_without_movement_only_focuses_it() {
+    let (mut state, _) = grouped_flat_state();
+    let source = grouped_agent_row(&state, "pane_1b");
+
+    let press = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        source.x + 1,
+        source.y,
+    )]);
+    // With more than one machine on screen the row selects its machine and the pane on it.
+    let [ClientShellAction::ActivateEndpoint {
+        endpoint_id,
+        target,
+    }] = &press.actions[..]
+    else {
+        panic!("agent focus request, got {:?}", press.actions);
+    };
+    assert!(endpoint_id.is_local());
+    assert_eq!(
+        target.as_ref(),
+        Some(&ClientEndpointFocusTarget::Pane("pane_1b".into()))
+    );
+    assert!(state.chrome_drag.is_none());
+
+    let release = release_at(&mut state, source);
+    assert!(release.actions.is_empty());
+}
+
+#[test]
+fn grouped_panel_agent_dropped_on_its_own_space_does_nothing() {
+    let (mut state, _) = grouped_flat_state();
+    let source = grouped_agent_row(&state, "pane_1");
+    for target in [
+        local_workspace_row(&state, "ws_1"),
+        grouped_space_header(&state, &ClientEndpointId::Local, "ws_1"),
+    ] {
+        drag_agent_onto(&mut state, source, target);
+        let release = release_at(&mut state, target);
+        assert!(release.actions.is_empty());
+    }
+}
+
+#[test]
+fn grouped_panel_agent_dropped_on_a_foreign_machine_space_is_refused() {
+    let (mut state, endpoint_id) = grouped_flat_state();
+    let source = grouped_agent_row(&state, "pane_1");
+    let target = grouped_space_header(&state, &endpoint_id, "ws_1");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    assert!(release.actions.is_empty());
+}
+
+#[test]
+fn grouped_panel_agent_of_a_foreign_machine_is_not_draggable() {
+    let (mut state, endpoint_id) = grouped_flat_state();
+    let source = state
+        .hits
+        .endpoint_agents
+        .iter()
+        .find(|(_, hit_endpoint_id, _, _)| *hit_endpoint_id == endpoint_id)
+        .expect("remote agent row")
+        .0;
+    let target = local_workspace_row(&state, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    assert!(state.chrome_drag.is_none());
+    let release = release_at(&mut state, target);
+    assert!(release.actions.is_empty());
+}
+
+#[test]
+fn grouped_panel_drop_target_rows_highlight_only_while_the_drag_is_over_them() {
+    for header in [false, true] {
+        let (mut state, _) = grouped_flat_state();
+        let source = grouped_agent_row(&state, "pane_1");
+        let target = if header {
+            grouped_space_header(&state, &ClientEndpointId::Local, "ws_2")
+        } else {
+            local_workspace_row(&state, "ws_2")
+        };
+        let frame = state.compose(106, 40).expect("idle sidebar");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        assert_ne!(
+            buffer[(target.x, target.y)].bg,
+            state.config.palette.surface1
+        );
+
+        drag_agent_onto(&mut state, source, target);
+        let frame = state.compose(106, 40).expect("drag over the target row");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        assert_eq!(
+            buffer[(target.x, target.y)].bg,
+            state.config.palette.surface1
+        );
+
+        release_at(&mut state, target);
+        let frame = state.compose(106, 40).expect("sidebar after the drop");
+        let buffer = frame.to_ratatui_buffer().expect("frame buffer");
+        assert_ne!(
+            buffer[(target.x, target.y)].bg,
+            state.config.palette.surface1
+        );
+    }
+}
+
+#[test]
+fn grouped_panel_solo_agent_pane_carries_its_custom_tab_label() {
+    let (mut state, endpoint_id) = grouped_flat_state();
+    let mut projected = grouped_local_snapshot();
+    for tab in &mut projected.tabs {
+        if tab.tab_id == "tab_2" {
+            tab.label = "auto-impl TA-312".into();
+            tab.custom_label = true;
+        }
+    }
+    let _ = endpoint_id;
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 40).expect("grouped sidebar");
+    let source = grouped_agent_row(&state, "pane_2");
+    let target = local_workspace_row(&state, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    assert_eq!(
+        moved_pane_target(&release),
+        (
+            "pane_2".into(),
+            Some("ws_2".into()),
+            Some("auto-impl TA-312".into())
+        )
+    );
+}
+
+#[test]
+fn grouped_panel_agent_pane_move_a_machine_cannot_take_is_refused_with_a_notice() {
+    let (mut state, _) = grouped_flat_state();
+    // A machine whose command lane does not carry `pane.move` has to say so, not swallow the drop.
+    state.set_endpoint_methods(Some(vec!["pane.focus".into()]));
+    let source = grouped_agent_row(&state, "pane_1");
+    let target = local_workspace_row(&state, "ws_2");
+
+    drag_agent_onto(&mut state, source, target);
+    let release = release_at(&mut state, target);
+    assert!(release.actions.is_empty());
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("unsupported pane move notice");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Unsupported);
+    assert_eq!(notice.key.code, "pane.move");
+}
