@@ -1794,20 +1794,24 @@ mod tests {
             .collect()
     }
 
+    /// Mark `pane_id`'s terminal as running `agent`, with `title` as the title
+    /// that agent has set, if any.
     fn run_agent(
         terminals: &mut HashMap<TerminalId, TerminalState>,
         ws: &Workspace,
         pane_id: PaneId,
         agent: crate::detect::Agent,
+        title: Option<&str>,
     ) {
         let terminal_id = ws
             .terminal_id(pane_id)
             .expect("pane must have a terminal")
             .clone();
-        terminals
+        let terminal = terminals
             .get_mut(&terminal_id)
-            .expect("terminal must be registered")
-            .detected_agent = Some(agent);
+            .expect("terminal must be registered");
+        terminal.detected_agent = Some(agent);
+        let _ = terminal.set_terminal_title(title.map(str::to_string));
     }
 
     #[test]
@@ -1815,7 +1819,13 @@ mod tests {
         let mut ws = Workspace::test_new("test");
         let mut terminals = terminals_at(&ws, "/herdr-test/pion");
         let root = ws.tabs[0].root_pane;
-        run_agent(&mut terminals, &ws, root, crate::detect::Agent::Claude);
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
         ws.tabs[0].set_custom_name("TA-588 #42".into());
 
         assert_eq!(
@@ -1826,18 +1836,101 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_running_one_agent_takes_that_agents_name() {
+    fn a_tab_running_one_agent_takes_the_title_that_agent_set() {
         let mut ws = Workspace::test_new("test");
         ws.test_split(Direction::Horizontal);
         let mut terminals = terminals_at(&ws, "/herdr-test/pion");
         let root = ws.tabs[0].root_pane;
-        run_agent(&mut terminals, &ws, root, crate::detect::Agent::Claude);
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
 
         assert_eq!(
             ws.tab_display_name(0, &terminals).as_deref(),
-            Some("claude")
+            Some("trading-api")
         );
         assert!(ws.tabs[0].is_auto_named(), "custom_label must stay false");
+
+        // The stripped title drops the activity glyph the agent prepends.
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("⠋ Historia projektu"),
+        );
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("Historia projektu")
+        );
+    }
+
+    #[test]
+    fn a_tab_running_one_agent_is_never_named_after_the_harness() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+
+        // Every agent of one harness would otherwise carry the same name.
+        for title in [None, Some("claude"), Some("Claude"), Some("  CLAUDE  ")] {
+            run_agent(
+                &mut terminals,
+                &ws,
+                root,
+                crate::detect::Agent::Claude,
+                title,
+            );
+            assert_eq!(
+                ws.tab_display_name(0, &terminals).as_deref(),
+                Some("pion"),
+                "a title of {title:?} must not name the tab"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tab_whose_agent_set_a_blank_title_takes_its_directory_name() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+
+        for title in [Some(""), Some("   "), Some("⠋   ")] {
+            run_agent(
+                &mut terminals,
+                &ws,
+                root,
+                crate::detect::Agent::Claude,
+                title,
+            );
+            assert_eq!(
+                ws.tab_display_name(0, &terminals).as_deref(),
+                Some("pion"),
+                "a title of {title:?} must not name the tab"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_agent_title_is_truncated_to_the_tab_name_limit() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("rename the derived tab label everywhere it is shown"),
+        );
+
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("rename the derived tab label ev…")
+        );
     }
 
     #[test]
@@ -1846,8 +1939,20 @@ mod tests {
         let second = ws.test_split(Direction::Horizontal);
         let mut terminals = terminals_at(&ws, "/herdr-test/pion");
         let root = ws.tabs[0].root_pane;
-        run_agent(&mut terminals, &ws, root, crate::detect::Agent::Claude);
-        run_agent(&mut terminals, &ws, second, crate::detect::Agent::Codex);
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
+        run_agent(
+            &mut terminals,
+            &ws,
+            second,
+            crate::detect::Agent::Codex,
+            Some("π - pi"),
+        );
 
         assert_eq!(ws.tab_display_name(0, &terminals).as_deref(), Some("pion"));
     }
@@ -1880,16 +1985,25 @@ mod tests {
         let moved_idx = ws.test_add_tab(None);
         let mut terminals = terminals_at(&ws, "/herdr-test/pion");
         let moved_root = ws.tabs[moved_idx].root_pane;
-        run_agent(&mut terminals, &ws, moved_root, crate::detect::Agent::Codex);
+        run_agent(
+            &mut terminals,
+            &ws,
+            moved_root,
+            crate::detect::Agent::Codex,
+            Some("rebase queue"),
+        );
         assert_eq!(
             ws.tab_display_name(moved_idx, &terminals).as_deref(),
-            Some("codex")
+            Some("rebase queue")
         );
 
         assert!(ws.move_tab(moved_idx, 0));
 
         assert_eq!(ws.tabs[0].root_pane, moved_root);
-        assert_eq!(ws.tab_display_name(0, &terminals).as_deref(), Some("codex"));
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("rebase queue")
+        );
         ws.assert_invariants_for_test();
     }
 
@@ -1906,10 +2020,11 @@ mod tests {
             &source,
             moved_pane,
             crate::detect::Agent::Gemini,
+            Some("release notes"),
         );
         assert_eq!(
             source.tab_display_name(0, &terminals).as_deref(),
-            Some("gemini")
+            Some("release notes")
         );
         assert_eq!(target.tab_display_name(0, &terminals).as_deref(), Some("1"));
 
@@ -1932,7 +2047,7 @@ mod tests {
 
         assert_eq!(
             target.tab_display_name(0, &terminals).as_deref(),
-            Some("gemini"),
+            Some("release notes"),
             "the derived name must re-derive itself from the pane that moved"
         );
         assert!(

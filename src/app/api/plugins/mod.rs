@@ -3518,8 +3518,9 @@ command = ["show-ctx"]
         assert_eq!(context.workspace_label.as_deref(), Some("Plugin Work"));
         assert_eq!(context.workspace_cwd.as_deref(), Some("/tmp/issue"));
         assert_eq!(context.tab_id.as_deref(), Some(tab_public.as_str()));
-        // The tab is unnamed and holds one reported agent, so it is named after it.
-        assert_eq!(context.tab_label.as_deref(), Some("codex"));
+        // The tab is unnamed and its one agent reported no terminal title, so it
+        // is named after its working directory.
+        assert_eq!(context.tab_label.as_deref(), Some("issue"));
         assert_eq!(
             context.focused_pane_id.as_deref(),
             Some(pane_public.as_str())

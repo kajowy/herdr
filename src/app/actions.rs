@@ -5281,16 +5281,17 @@ mod tests {
             .terminal_id(moved_root)
             .expect("root pane must have a terminal")
             .clone();
-        state
+        let terminal = state
             .terminals
             .get_mut(&terminal_id)
-            .expect("terminal must be registered")
-            .detected_agent = Some(Agent::Codex);
+            .expect("terminal must be registered");
+        terminal.detected_agent = Some(Agent::Codex);
+        let _ = terminal.set_terminal_title(Some("rebase queue".into()));
         assert_eq!(
             state.workspaces[0]
                 .tab_display_name(moved_idx, &state.terminals)
                 .as_deref(),
-            Some("codex")
+            Some("rebase queue")
         );
 
         let relocation = state
@@ -5301,7 +5302,7 @@ mod tests {
             state.workspaces[relocation.target_workspace_idx]
                 .tab_display_name(relocation.target_tab_idx, &state.terminals)
                 .as_deref(),
-            Some("codex"),
+            Some("rebase queue"),
             "a derived name must follow the tab into another space"
         );
         state.assert_invariants_for_test();
