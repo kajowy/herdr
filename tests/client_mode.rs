@@ -1540,7 +1540,13 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         .as_str()
         .expect("second pane id")
         .to_string();
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=");
+    // The second tab is unnamed, so it is labelled after its working directory.
+    let second_tab_label = base
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("test directory name")
+        .to_string();
+    wait_for_window_title(&output, &format!("|W=space-a|T={second_tab_label}|P=|O="));
     let titles_before_hidden_update = captured_window_titles(&output).len();
     send_pane_shell_command(&api_socket, &pane_id, r"printf '\033]0;hidden update\007'");
     // Intentionally consume the AppState title through a read-only request
@@ -1551,7 +1557,10 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         &second_pane_id,
         r"printf '\033]0;foreground marker\007'",
     );
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=foreground marker");
+    wait_for_window_title(
+        &output,
+        &format!("|W=space-a|T={second_tab_label}|P=|O=foreground marker"),
+    );
     assert!(
         captured_window_titles(&output)[titles_before_hidden_update..]
             .iter()

@@ -15,6 +15,8 @@ A workspace owns tabs and panes. Its sidebar state rolls up from the agents insi
 
 A tab is a layout inside a workspace. Use tabs to separate views like `agents`, `logs`, `server`, or `review`.
 
+A tab you have not named is named after what it holds: the agent running in it when it runs exactly one, otherwise its working directory, otherwise its position. Two or more agents in one tab fall back to the directory, because naming it after one of them would be arbitrary. The tab bar keeps the position in front of a derived name so `prefix+1` through `prefix+9` still tell you which tab they switch to.
+
 Tabs are addressable from the CLI and socket API.
 
 ## Pane

@@ -88,8 +88,13 @@ impl HeadlessServer {
         let tab_id = crate::workspace::public_tab_id_for_number(&workspace_id, tab_number);
         let workspace_label =
             workspace.display_name_from(&self.app.state.terminals, &self.app.terminal_runtimes);
-        let context =
-            crate::app::actions::notification_context(workspace, &workspace_label, ws_idx, pane_id);
+        let context = crate::app::actions::notification_context(
+            workspace,
+            &workspace_label,
+            ws_idx,
+            pane_id,
+            &self.app.state.terminals,
+        );
         let agent = known_agent
             .map(crate::detect::agent_label)
             .map(str::to_owned);
@@ -164,6 +169,7 @@ impl HeadlessServer {
             &workspace_label,
             update.ws_idx,
             update.pane_id,
+            &self.app.state.terminals,
         );
         self.send_notify_to_foreground_client(
             toast_notify_kind(self.app.state.toast_config.delivery)

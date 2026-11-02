@@ -201,6 +201,38 @@ impl Tab {
         self.custom_name.is_none()
     }
 
+    /// Label for a tab the owner has not named: the one agent running in it,
+    /// otherwise the basename of its working directory, otherwise `position`.
+    ///
+    /// Two or more agents fall through to the directory, because picking one of
+    /// them would be arbitrary and would flip as agents come and go. The
+    /// directory comes from the root pane, the tab's identity source, so the
+    /// name does not follow the owner's focus around the tab.
+    ///
+    /// This runs per snapshot per tab, so it reads only cached terminal facts
+    /// and allocates nothing beyond the returned name.
+    pub fn automatic_display_name(
+        &self,
+        position: usize,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> String {
+        let mut agents = self.panes.values().filter_map(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .and_then(TerminalState::effective_agent_label)
+        });
+        if let Some(label) = agents.next().filter(|_| agents.next().is_none()) {
+            return label.to_string();
+        }
+        self.terminal_id(self.root_pane)
+            .and_then(|terminal_id| terminals.get(terminal_id))
+            .and_then(|terminal| terminal.cwd.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| position.to_string())
+    }
+
     pub fn set_custom_name(&mut self, name: String) {
         // A blank name clears the manual label so the tab returns to its automatic one.
         self.custom_name = (!name.trim().is_empty()).then_some(name);

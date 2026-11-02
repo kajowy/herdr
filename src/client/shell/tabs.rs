@@ -23,8 +23,9 @@ pub(crate) fn render_tab_bar(
         .collect::<Vec<_>>();
     let desired_widths = tabs
         .iter()
-        .map(|tab| {
-            let label = tab_label(tab);
+        .enumerate()
+        .map(|(index, tab)| {
+            let label = tab_label(index, tab);
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
@@ -92,7 +93,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab);
+        let name = tab_label(index, tab);
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -371,17 +372,64 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
-fn tab_label(tab: &ClientShellTab) -> String {
-    if tab.zoomed {
-        format!("{} Z", tab.label)
+/// Number of tabs the `prefix`+digit shortcut can reach.
+const SWITCH_SHORTCUT_TABS: usize = 9;
+
+/// Label for the tab at `index` in the focused workspace.
+///
+/// An automatic label used to be the tab's position, so the position the switch
+/// shortcut uses was always on screen. Now that an automatic label can name the
+/// tab's contents instead, the position is shown next to it for the tabs the
+/// shortcut can still reach. A name the owner typed is left alone.
+fn tab_label(index: usize, tab: &ClientShellTab) -> String {
+    let switch_number = index + 1;
+    let mut label = if !tab.custom_label
+        && switch_number <= SWITCH_SHORTCUT_TABS
+        && tab.label != switch_number.to_string()
+    {
+        format!("{switch_number} {}", tab.label)
     } else {
         tab.label.clone()
+    };
+    if tab.zoomed {
+        label.push_str(" Z");
     }
+    label
 }
 
 #[cfg(test)]
 mod tests {
-    use super::max_tab_scroll;
+    use super::{max_tab_scroll, tab_label};
+    use crate::api::schema::AgentStatus;
+    use crate::client::protocol::ClientShellTab;
+
+    fn tab(label: &str, custom_label: bool) -> ClientShellTab {
+        ClientShellTab {
+            tab_id: "tab_1".into(),
+            workspace_id: "ws_1".into(),
+            number: 1,
+            label: label.into(),
+            custom_label,
+            zoomed: false,
+            focused: false,
+            agent_status: AgentStatus::Idle,
+        }
+    }
+
+    #[test]
+    fn a_derived_tab_label_keeps_the_switch_number_in_front_of_it() {
+        assert_eq!(tab_label(0, &tab("claude", false)), "1 claude");
+        assert_eq!(tab_label(2, &tab("herdr", false)), "3 herdr");
+        // The positional fallback is already the switch number.
+        assert_eq!(tab_label(1, &tab("2", false)), "2");
+        // A name the owner typed is left alone.
+        assert_eq!(tab_label(0, &tab("TA-588 #42", true)), "TA-588 #42");
+        // No shortcut reaches the tenth tab, so there is no number to show.
+        assert_eq!(tab_label(9, &tab("claude", false)), "claude");
+        let mut zoomed = tab("claude", false);
+        zoomed.zoomed = true;
+        assert_eq!(tab_label(0, &zoomed), "1 claude Z");
+    }
 
     #[test]
     fn trailing_scroll_limit_accounts_for_full_widths_and_separators() {

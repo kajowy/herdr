@@ -1,6 +1,7 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use tracing::warn;
@@ -10,7 +11,7 @@ use crate::events::AppEvent;
 use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{find_in_direction, NavDirection};
-use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
+use crate::terminal::{EffectiveStateChange, TerminalId, TerminalState, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
 
 use super::api_helpers::pane_agent_status;
@@ -151,11 +152,12 @@ pub fn notification_context(
     workspace_label: &str,
     ws_idx: usize,
     pane_id: PaneId,
+    terminals: &HashMap<TerminalId, TerminalState>,
 ) -> String {
     let mut context = format!("{} · {}", workspace_label, ws_idx + 1);
     if ws.tabs.len() > 1 {
         if let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) {
-            if let Some(label) = ws.tab_display_name(tab_idx) {
+            if let Some(label) = ws.tab_display_name(tab_idx, terminals) {
                 context.push_str(&format!(" · {label}"));
             }
         }
@@ -2125,8 +2127,13 @@ impl AppState {
         let build_toast = || {
             let workspace_label =
                 self.workspaces[ws_idx].display_name_from_terminals(&self.terminals);
-            let context =
-                notification_context(&self.workspaces[ws_idx], &workspace_label, ws_idx, pane_id);
+            let context = notification_context(
+                &self.workspaces[ws_idx],
+                &workspace_label,
+                ws_idx,
+                pane_id,
+                &self.terminals,
+            );
             ToastNotification {
                 kind,
                 title: format!(
@@ -2336,7 +2343,13 @@ mod tests {
         let root = state.workspaces[0].tabs[0].root_pane;
 
         assert_eq!(
-            notification_context(&state.workspaces[0], "__herdr_projects__", 0, root),
+            notification_context(
+                &state.workspaces[0],
+                "__herdr_projects__",
+                0,
+                root,
+                &state.terminals
+            ),
             "__herdr_projects__ · 1"
         );
     }
@@ -5255,6 +5268,42 @@ mod tests {
         assert_eq!(state.workspaces[1].tabs.len(), target_tabs_before + 1);
         state.workspaces[0].assert_invariants_for_test();
         state.workspaces[1].assert_invariants_for_test();
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn relocate_tab_keeps_the_name_derived_from_its_content() {
+        let mut state = app_with_workspaces(&["source", "target"]);
+        let moved_idx = state.workspaces[0].test_add_tab(None);
+        state.ensure_test_terminals();
+        let moved_root = state.workspaces[0].tabs[moved_idx].root_pane;
+        let terminal_id = state.workspaces[0]
+            .terminal_id(moved_root)
+            .expect("root pane must have a terminal")
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal must be registered")
+            .detected_agent = Some(Agent::Codex);
+        assert_eq!(
+            state.workspaces[0]
+                .tab_display_name(moved_idx, &state.terminals)
+                .as_deref(),
+            Some("codex")
+        );
+
+        let relocation = state
+            .relocate_tab(0, moved_idx, 1, None)
+            .expect("tab should relocate");
+
+        assert_eq!(
+            state.workspaces[relocation.target_workspace_idx]
+                .tab_display_name(relocation.target_tab_idx, &state.terminals)
+                .as_deref(),
+            Some("codex"),
+            "a derived name must follow the tab into another space"
+        );
         state.assert_invariants_for_test();
     }
 }

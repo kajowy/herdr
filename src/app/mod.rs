@@ -2378,6 +2378,12 @@ mod tests {
             .find_tab_index_for_pane(survivor_pane)
             .unwrap();
 
+        // No pane reports a directory to derive a name from, so the label falls
+        // back to the tab's position and stays distinct from its public number.
+        for terminal in app.state.terminals.values_mut() {
+            terminal.cwd = std::path::PathBuf::from("/");
+        }
+
         let tab = app.tab_info(0, survivor_idx).unwrap();
 
         assert_eq!(tab.tab_id, format!("{}:t3", app.state.workspaces[0].id));
