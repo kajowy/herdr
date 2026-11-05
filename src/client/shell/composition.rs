@@ -19,7 +19,132 @@ fn restore_mode_bar(
     }
 }
 
+/// Longest carried name a drag label shows before it is cut short.
+const DRAG_CARRY_LABEL_WIDTH: usize = 24;
+
 impl ClientShellState {
+    /// The label an armed tab or agent drag carries and the rect it will leave from. `None`
+    /// for every other drag and whenever no drag is armed, so an idle frame pays one
+    /// discriminant check.
+    fn drag_carry(&self) -> Option<(&ClientDragCarry, Rect)> {
+        match self.chrome_drag.as_ref()? {
+            ClientChromeDrag::Tab { tab_id, carry, .. } => Some((
+                carry,
+                self.hits
+                    .tabs
+                    .iter()
+                    .find(|(_, hit_tab_id)| hit_tab_id == tab_id)
+                    .map_or_else(Rect::default, |(rect, _)| *rect),
+            )),
+            ClientChromeDrag::AgentPane { pane_id, carry, .. } => {
+                Some((carry, self.agent_row_rect(pane_id)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Row the agents panel gives `pane_id`, in either the flat or the per-machine list.
+    fn agent_row_rect(&self, pane_id: &str) -> Rect {
+        self.hits
+            .endpoint_agents
+            .iter()
+            .find(|(_, endpoint_id, hit_pane_id, _)| {
+                *endpoint_id == self.active_endpoint_id && hit_pane_id == pane_id
+            })
+            .map(|(rect, _, _, _)| *rect)
+            .or_else(|| {
+                self.hits
+                    .agents
+                    .iter()
+                    .find(|(_, hit_pane_id, _)| hit_pane_id == pane_id)
+                    .map(|(rect, _, _)| *rect)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Show what an armed drag is carrying: a label beside the pointer and a muted source row
+    /// or tab, so the list still reads as it does at rest while naming where the thing leaves
+    /// from. The label is clamped into the frame, so it never wraps at an edge.
+    fn render_drag_carry(
+        &self,
+        frame: &mut FrameData,
+        occlusion: &mut crate::kitty_graphics::surface::Occlusion,
+    ) {
+        let Some((carry, source)) = self.drag_carry() else {
+            return;
+        };
+        if frame.width == 0 || frame.height == 0 {
+            return;
+        }
+        let budget = DRAG_CARRY_LABEL_WIDTH.min(usize::from(frame.width).saturating_sub(2));
+        let text = format!(" {} ", crate::ui::truncate_end(&carry.label, budget));
+        let width = render::display_width(&text).min(frame.width);
+        if width == 0 {
+            return;
+        }
+        let x = carry
+            .pointer
+            .0
+            .saturating_add(2)
+            .min(frame.width.saturating_sub(width));
+        let last_row = frame.height.saturating_sub(1);
+        let pointer_row = carry.pointer.1.min(last_row);
+        // One row below the pointer keeps the drop target's own row readable; at the bottom
+        // edge the label steps above it instead.
+        let y = if pointer_row < last_row {
+            pointer_row.saturating_add(1)
+        } else {
+            pointer_row.saturating_sub(1)
+        };
+        let Some(mut composed) = frame.to_ratatui_buffer() else {
+            return;
+        };
+        if let Some((body, row)) = self.agent_reorder_indicator() {
+            render::put_text(
+                &mut composed,
+                body.x,
+                row,
+                body.width,
+                &"\u{2500}".repeat(body.width as usize),
+                Style::default().fg(self.config.palette.accent),
+            );
+            occlusion.cover(Rect::new(body.x, row, body.width, 1));
+        }
+        if !source.is_empty() {
+            composed.set_style(source, Style::default().add_modifier(Modifier::DIM));
+            occlusion.cover(source);
+        }
+        render::put_text(
+            &mut composed,
+            x,
+            y,
+            width,
+            &text,
+            Style::default()
+                .fg(panel_contrast_fg(&self.config.palette))
+                .bg(self.config.palette.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        occlusion.cover(Rect::new(x, y, width, 1));
+        let cursor = frame.cursor.clone();
+        frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+    }
+
+    /// The agents-panel body and the row an insertion line marks while an agent row is being
+    /// dragged inside its own group. `None` for every other drag.
+    fn agent_reorder_indicator(&self) -> Option<(Rect, u16)> {
+        let Some(ClientChromeDrag::AgentPane {
+            reorder: Some(reorder),
+            ..
+        }) = self.chrome_drag.as_ref()
+        else {
+            return None;
+        };
+        let body = self.hits.agent_body;
+        (reorder.indicator_row >= body.y && reorder.indicator_row < body.bottom())
+            .then_some((body, reorder.indicator_row))
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16, now: std::time::Instant) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -61,6 +186,7 @@ impl ClientShellState {
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
+            manual_agent_order: &self.manual_agent_order,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
@@ -73,6 +199,7 @@ impl ClientShellState {
             spaces_section_collapsed: self.spaces_section_collapsed,
             agents_section_collapsed: self.agents_section_collapsed,
             tab_drag_insert_index: None,
+            drop_target_workspace_id: None,
             selected_workspace_id: self
                 .navigate_workspace_id
                 .as_ref()
@@ -196,9 +323,20 @@ impl ClientShellState {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
             self.reveal_focused_tab = true;
         }
-        let tab_drag_insert_index = match &self.chrome_drag {
-            Some(ClientChromeDrag::Tab { insert_index, .. }) => *insert_index,
-            _ => None,
+        // A space row under the pointer owns the drop, so the in-bar indicator steps aside.
+        let (tab_drag_insert_index, drop_target_workspace_id) = match &self.chrome_drag {
+            Some(ClientChromeDrag::Tab {
+                insert_index,
+                workspace_target,
+                ..
+            }) => match workspace_target {
+                Some(workspace_id) => (None, Some(workspace_id.as_str())),
+                None => (*insert_index, None),
+            },
+            Some(ClientChromeDrag::AgentPane {
+                workspace_target, ..
+            }) => (None, workspace_target.as_deref()),
+            _ => (None, None),
         };
         let (dragged_workspace_id, workspace_drop_indicator_row) = match &self.chrome_drag {
             Some(ClientChromeDrag::Workspace {
@@ -223,6 +361,7 @@ impl ClientShellState {
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
+                manual_agent_order: &self.manual_agent_order,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
@@ -235,6 +374,7 @@ impl ClientShellState {
                 spaces_section_collapsed: self.spaces_section_collapsed,
                 agents_section_collapsed: self.agents_section_collapsed,
                 tab_drag_insert_index,
+                drop_target_workspace_id,
                 selected_workspace_id: self
                     .navigate_workspace_id
                     .as_ref()
@@ -618,6 +758,10 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 &self.config,
+                AgentPanelOrdering {
+                    sort: self.config.agent_panel_sort,
+                    manual: &self.manual_agent_order,
+                },
                 self.navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),
@@ -653,6 +797,7 @@ impl ClientShellState {
         if let Some(bar) = mode_bar {
             occlusion.cover(bar);
         }
+        self.render_drag_carry(&mut frame, &mut occlusion);
         if let Some(overlay) = self.overlay.as_ref() {
             let mut composed = frame.to_ratatui_buffer()?;
             let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {

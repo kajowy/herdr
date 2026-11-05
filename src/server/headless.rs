@@ -3260,6 +3260,7 @@ impl HeadlessServer {
                             &workspace_label,
                             *ws_idx,
                             *pane_id,
+                            &self.app.state.terminals,
                         );
                         self.send_notify_to_foreground_client(
                             toast_notify_kind(self.app.state.toast_config.delivery)

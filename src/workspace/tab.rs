@@ -11,6 +11,10 @@ use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
+/// Longest derived tab name, in display columns, matching how other derived
+/// labels are bounded.
+const MAX_DERIVED_NAME_WIDTH: usize = 32;
+
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
 pub(crate) struct MovedPane {
@@ -199,6 +203,62 @@ impl Tab {
 
     pub fn is_auto_named(&self) -> bool {
         self.custom_name.is_none()
+    }
+
+    /// Label for a tab the owner has not named: the title set by the one agent
+    /// running in it, otherwise the basename of its working directory,
+    /// otherwise `position`.
+    ///
+    /// Two or more agents fall through to the directory, because picking one of
+    /// them would be arbitrary and would flip as agents come and go. The
+    /// directory comes from the root pane, the tab's identity source, so the
+    /// name does not follow the owner's focus around the tab.
+    ///
+    /// This runs per snapshot per tab, so it reads only cached terminal facts
+    /// and allocates nothing beyond the returned name.
+    pub fn automatic_display_name(
+        &self,
+        position: usize,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> String {
+        if let Some(title) = self.single_agent_title(terminals) {
+            return title;
+        }
+        self.terminal_id(self.root_pane)
+            .and_then(|terminal_id| terminals.get(terminal_id))
+            .and_then(|terminal| terminal.cwd.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| position.to_string())
+    }
+
+    /// Title set by the only agent running in this tab, when it carries more
+    /// than the harness name.
+    ///
+    /// A title equal to the agent's own label, such as `claude` for the claude
+    /// harness, is shared by every agent of that harness and says nothing about
+    /// the tab, so it is rejected along with a blank one. The stripped title
+    /// drops the activity glyph an agent prepends and is already trimmed.
+    fn single_agent_title(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Option<String> {
+        let mut agents = self.panes.values().filter_map(|pane| {
+            let terminal = terminals.get(&pane.attached_terminal_id)?;
+            terminal
+                .effective_agent_label()
+                .map(|label| (terminal, label))
+        });
+        let (terminal, label) = agents.next().filter(|_| agents.next().is_none())?;
+        let title = terminal.terminal_title_stripped()?;
+        if title.eq_ignore_ascii_case(label) {
+            return None;
+        }
+        Some(
+            if crate::ui::display_width(&title) > MAX_DERIVED_NAME_WIDTH {
+                crate::ui::truncate_end(&title, MAX_DERIVED_NAME_WIDTH)
+            } else {
+                title
+            },
+        )
     }
 
     pub fn set_custom_name(&mut self, name: String) {

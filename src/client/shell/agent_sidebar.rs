@@ -15,6 +15,8 @@ pub(super) const AGENT_PANEL_HEADER_ROWS: u16 = 2;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    /// Tab the agent's pane belongs to, kept so a drag off this row needs no snapshot lookup.
+    pub(super) tab_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
@@ -22,7 +24,8 @@ pub(super) struct AgentRow {
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
-    sort: crate::config::AgentPanelSortConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -38,7 +41,7 @@ pub(super) fn ordered_agent_pane_ids(
             .collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    if sort == crate::config::AgentPanelSortConfig::Priority {
+    if ordering.sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
                 std::cmp::Reverse(status_priority(agent.agent_status)),
@@ -46,10 +49,57 @@ pub(super) fn ordered_agent_pane_ids(
             )
         });
     }
-    agents
-        .into_iter()
+    let mut pane_ids = agents
+        .iter()
         .map(|agent| agent.pane_id.clone())
-        .collect()
+        .collect::<Vec<_>>();
+    apply_manual_agent_order(&mut pane_ids, &agents, ordering, endpoint_id);
+    pane_ids
+}
+
+/// Rearrange the rows of each group the owner dragged into an order of its own, leaving the
+/// slots that group occupies and every other group's rows where the sort mode put them.
+/// Agents the arrangement does not name keep their sorted order at the end of their group, so
+/// one arriving mid-session never reshuffles what the owner arranged, and one that left is
+/// simply absent. Costs nothing while no group has an arrangement.
+fn apply_manual_agent_order(
+    pane_ids: &mut [String],
+    agents: &[&crate::protocol::ClientShellAgent],
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
+) {
+    if ordering.manual.is_empty() {
+        return;
+    }
+    let mut groups = Vec::<(&str, Vec<usize>)>::new();
+    for (index, agent) in agents.iter().enumerate() {
+        match groups
+            .iter_mut()
+            .find(|(workspace_id, _)| *workspace_id == agent.workspace_id.as_str())
+        {
+            Some((_, slots)) => slots.push(index),
+            None => groups.push((agent.workspace_id.as_str(), vec![index])),
+        }
+    }
+    for (workspace_id, slots) in groups {
+        let Some(manual) = ordering.manual.group(endpoint_id, workspace_id) else {
+            continue;
+        };
+        let mut arranged = manual
+            .iter()
+            .filter(|pane_id| slots.iter().any(|slot| &pane_ids[*slot] == *pane_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        arranged.extend(
+            slots
+                .iter()
+                .map(|slot| pane_ids[*slot].clone())
+                .filter(|pane_id| !manual.contains(pane_id)),
+        );
+        for (slot, pane_id) in slots.into_iter().zip(arranged) {
+            pane_ids[slot] = pane_id;
+        }
+    }
 }
 
 pub(super) fn render_agent_panel(
@@ -57,6 +107,8 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     agent_scroll: &mut usize,
     collapsed: bool,
     hits: &mut ShellHitMap,
@@ -66,6 +118,7 @@ pub(super) fn render_agent_panel(
         area,
         snapshot.agent_view_label.as_deref(),
         config,
+        !ordering.manual.is_empty(),
         hits,
         true,
         Some(collapsed),
@@ -74,7 +127,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(snapshot, config, ordering, endpoint_id, None);
     render_agent_list(
         buffer,
         area,
@@ -88,7 +141,8 @@ pub(super) fn render_agent_panel(
         hits,
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
+            hits.agents
+                .push((rect, row.pane_id.clone(), row.tab_id.clone()));
             render_agent_row(buffer, rect, row, config);
         },
     );
@@ -99,6 +153,7 @@ pub(super) fn render_agent_panel_header(
     area: Rect,
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
+    manual_order: bool,
     hits: &mut ShellHitMap,
     separator: bool,
     fold: Option<bool>,
@@ -134,10 +189,16 @@ pub(super) fn render_agent_panel_header(
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-    let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
-        crate::config::AgentPanelSortConfig::Spaces => "spaces",
-        crate::config::AgentPanelSortConfig::Priority => "priority",
-        crate::config::AgentPanelSortConfig::Grouped => "grouped",
+    // An arrangement of the owner's own replaces the sort mode for the groups that have one,
+    // so the label says so and stays the control that leaves it behind.
+    let sort_label = agent_view_label.unwrap_or(if manual_order {
+        "manual"
+    } else {
+        match config.agent_panel_sort {
+            crate::config::AgentPanelSortConfig::Spaces => "spaces",
+            crate::config::AgentPanelSortConfig::Priority => "priority",
+            crate::config::AgentPanelSortConfig::Grouped => "grouped",
+        }
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -164,7 +225,7 @@ pub(super) fn render_agent_panel_header(
         sort_rect.width,
         sort_label,
         Style::default()
-            .fg(if agent_view_label.is_some() {
+            .fg(if agent_view_label.is_some() || manual_order {
                 config.palette.accent
             } else {
                 config.palette.overlay0
@@ -280,9 +341,11 @@ fn render_agent_list_body<T>(
 pub(super) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    ordering: AgentPanelOrdering<'_>,
+    endpoint_id: &ClientEndpointId,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    ordered_agent_pane_ids(snapshot, ordering, endpoint_id)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
         .collect()
@@ -343,6 +406,7 @@ pub(super) fn agent_row(
     );
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        tab_id: agent.tab_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
         rows,
@@ -365,7 +429,7 @@ fn agent_tab_label<'a>(
         .map(|tab| tab.label.as_str())
 }
 
-fn agent_display_label(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+pub(super) fn agent_display_label(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
     agent
         .display_agent
         .as_deref()
@@ -433,7 +497,15 @@ pub(super) fn render_agent_row(
 /// per-endpoint collapsed-group set and its persistence with worktree groups;
 /// the prefix keeps it apart from worktree keys.
 pub(super) fn agent_group_key(workspace_id: &str) -> String {
-    format!("agents:{workspace_id}")
+    format!("{AGENT_GROUP_PREFIX}{workspace_id}")
+}
+
+const AGENT_GROUP_PREFIX: &str = "agents:";
+
+/// The space a grouped agent header stands for, so a drag can drop on it where the tree
+/// replaces the spaces list.
+pub(super) fn agent_group_workspace_id(key: &str) -> Option<&str> {
+    key.strip_prefix(AGENT_GROUP_PREFIX)
 }
 
 /// Where a run of grouped agent lines comes from.
@@ -463,6 +535,7 @@ pub(super) enum GroupedAgentLineKind {
     },
     Agent {
         pane_id: String,
+        tab_id: String,
         status: crate::api::schema::AgentStatus,
         focused: bool,
         /// Mark of the agent running there, shown instead of its name.
@@ -530,6 +603,7 @@ pub(super) fn push_grouped_agent_lines(
                 stale: source.stale,
                 kind: GroupedAgentLineKind::Agent {
                     pane_id: agent.pane_id.clone(),
+                    tab_id: agent.tab_id.clone(),
                     status: agent.agent_status,
                     focused: agent.focused && source.active,
                     mark,
@@ -604,6 +678,7 @@ pub(super) fn render_grouped_agent_list(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     selected_workspace: Option<&WorkspaceNavigationTarget>,
+    drop_target: Option<(&ClientEndpointId, &str)>,
     endpoint_hits: bool,
     hits: &mut ShellHitMap,
 ) {
@@ -626,6 +701,7 @@ pub(super) fn render_grouped_agent_list(
                 line,
                 config,
                 selected_workspace,
+                drop_target,
                 endpoint_hits,
                 hits,
             );
@@ -651,6 +727,7 @@ fn render_grouped_agent_line(
     line: &GroupedAgentLine,
     config: &ClientShellConfig,
     selected_workspace: Option<&WorkspaceNavigationTarget>,
+    drop_target: Option<(&ClientEndpointId, &str)>,
     endpoint_hits: bool,
     hits: &mut ShellHitMap,
 ) {
@@ -664,7 +741,11 @@ fn render_grouped_agent_line(
             status,
             collapsed,
         } => {
-            if selected_workspace
+            // In grouped mode these headers are the sidebar's only space rows, so a drag held
+            // over one has to show its drop target here.
+            if drop_target == Some((&line.endpoint_id, workspace_id.as_str())) {
+                buffer.set_style(rect, Style::default().bg(palette.surface1));
+            } else if selected_workspace
                 .is_some_and(|target| target.matches(&line.endpoint_id, workspace_id))
             {
                 buffer.set_style(
@@ -702,6 +783,7 @@ fn render_grouped_agent_line(
         }
         GroupedAgentLineKind::Agent {
             pane_id,
+            tab_id,
             status,
             focused,
             mark,
@@ -743,10 +825,14 @@ fn render_grouped_agent_line(
                 .style(row_style)
                 .render(rect, buffer);
             if endpoint_hits {
-                hits.endpoint_agents
-                    .push((rect, line.endpoint_id.clone(), pane_id.clone()));
+                hits.endpoint_agents.push((
+                    rect,
+                    line.endpoint_id.clone(),
+                    pane_id.clone(),
+                    tab_id.clone(),
+                ));
             } else {
-                hits.agents.push((rect, pane_id.clone()));
+                hits.agents.push((rect, pane_id.clone(), tab_id.clone()));
             }
         }
     }

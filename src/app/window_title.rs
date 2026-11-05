@@ -95,7 +95,7 @@ impl App {
                         self.state
                             .workspaces
                             .get(workspace_index)?
-                            .tab_display_name(tab_index)
+                            .tab_display_name(tab_index, &self.state.terminals)
                     }) {
                         title.push_str(&name);
                     }
@@ -147,8 +147,12 @@ mod tests {
     fn renders_workspace_and_tab_names() {
         let mut app = test_app();
         app.configure_window_title("{workspace}/{tab}");
+        // The tab is unnamed, so it is named after its working directory.
+        for terminal in app.state.terminals.values_mut() {
+            terminal.cwd = std::path::PathBuf::from("/herdr-test/pion");
+        }
 
-        assert_eq!(app.window_title().as_deref(), Some("herd/1"));
+        assert_eq!(app.window_title().as_deref(), Some("herd/pion"));
 
         app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));

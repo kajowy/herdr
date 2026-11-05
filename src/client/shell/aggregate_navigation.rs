@@ -42,6 +42,7 @@ pub(super) fn cached_endpoint_snapshots(
         })
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct AggregateAgentRow<'a> {
     pub(super) endpoint: CachedEndpointSnapshot<'a>,
     pub(super) agent: &'a ClientShellAgent,
@@ -56,7 +57,7 @@ pub(super) struct AggregateAgentTarget {
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    ordering: AgentPanelOrdering<'_>,
 ) -> Vec<AggregateAgentRow<'a>> {
     let active_index = endpoints
         .iter()
@@ -126,34 +127,95 @@ pub(super) fn aggregate_agent_rows<'a>(
                 return rows;
             }
         }
-        sort_aggregate_rows(&mut rows, sort);
+        sort_aggregate_rows(&mut rows, ordering.sort);
+        // A view is an ordering of its own, named in the header; the owner's arrangement only
+        // governs the rows no view claims.
+        if view.is_none() {
+            apply_manual_agent_order(&mut rows, ordering.manual);
+        }
         return rows;
     }
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
-            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
-                .into_iter()
-                .filter_map(move |pane_id| {
-                    let agent = endpoint
-                        .snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.pane_id == pane_id)?;
-                    Some(AggregateAgentRow {
-                        recency: endpoint
-                            .agent_recency
-                            .get(&pane_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        endpoint,
-                        agent,
-                    })
+            super::agent_sidebar::ordered_agent_pane_ids(
+                endpoint.snapshot,
+                ordering,
+                endpoint.endpoint_id,
+            )
+            .into_iter()
+            .filter_map(move |pane_id| {
+                let agent = endpoint
+                    .snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == pane_id)?;
+                Some(AggregateAgentRow {
+                    recency: endpoint
+                        .agent_recency
+                        .get(&pane_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    endpoint,
+                    agent,
                 })
+            })
         })
         .collect::<Vec<_>>();
-    sort_aggregate_rows(&mut rows, sort);
+    sort_aggregate_rows(&mut rows, ordering.sort);
+    apply_manual_agent_order(&mut rows, ordering.manual);
     rows
+}
+
+/// Rearrange the rows of every group the owner dragged into an order of its own, leaving the
+/// slots that group occupies and every other group's rows where the sort mode put them. Every
+/// panel layout -- grouped tree or flat list, one machine or several -- draws the rows this
+/// function returns, so it is the single place the arrangement has to reach, and it runs after
+/// the sort so an arranged group wins over the mode. Agents the arrangement does not name keep
+/// their sorted order at the end of their group; a machine running a view keeps that view's
+/// order. Costs one empty-map check while no group has an arrangement.
+fn apply_manual_agent_order(rows: &mut [AggregateAgentRow<'_>], manual: &ClientManualAgentOrder) {
+    if manual.is_empty() {
+        return;
+    }
+    let mut groups = Vec::<((&ClientEndpointId, &str), Vec<usize>)>::new();
+    for (index, row) in rows.iter().enumerate() {
+        if row.endpoint.snapshot.agent_view_label.is_some() {
+            continue;
+        }
+        let key = (row.endpoint.endpoint_id, row.agent.workspace_id.as_str());
+        match groups.iter_mut().find(|(candidate, _)| *candidate == key) {
+            Some((_, slots)) => slots.push(index),
+            None => groups.push((key, vec![index])),
+        }
+    }
+    for ((endpoint_id, workspace_id), slots) in groups {
+        let Some(arrangement) = manual.group(endpoint_id, workspace_id) else {
+            continue;
+        };
+        let mut arranged = arrangement
+            .iter()
+            .filter_map(|pane_id| {
+                slots
+                    .iter()
+                    .copied()
+                    .find(|slot| rows[*slot].agent.pane_id == *pane_id)
+            })
+            .collect::<Vec<_>>();
+        arranged.extend(
+            slots
+                .iter()
+                .copied()
+                .filter(|slot| !arrangement.contains(&rows[*slot].agent.pane_id)),
+        );
+        let picked = arranged
+            .into_iter()
+            .map(|slot| rows[slot])
+            .collect::<Vec<_>>();
+        for (slot, row) in slots.into_iter().zip(picked) {
+            rows[slot] = row;
+        }
+    }
 }
 
 fn sort_aggregate_rows(
@@ -263,9 +325,9 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    ordering: AgentPanelOrdering<'_>,
 ) -> Vec<AggregateAgentTarget> {
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
+    aggregate_agent_rows(endpoints, active_endpoint_id, ordering)
         .into_iter()
         .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {

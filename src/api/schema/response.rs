@@ -112,6 +112,17 @@ pub enum ResponseResult {
     TabList {
         tabs: Vec<TabInfo>,
     },
+    TabRelocated {
+        /// The moved tab as it exists in its new workspace.
+        tab: TabInfo,
+        /// Authoritative tab list of the target workspace after the move.
+        tabs: Vec<TabInfo>,
+        /// Index the moved tab occupies in the target workspace.
+        insert_index: usize,
+        /// Public id of the source workspace when the move emptied and closed it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed_workspace_id: Option<String>,
+    },
     AgentInfo {
         agent: AgentInfo,
     },

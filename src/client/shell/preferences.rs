@@ -14,6 +14,18 @@ pub(super) struct ClientRemoteCollapsedGroups {
     pub(super) collapsed_groups: Vec<String>,
 }
 
+/// The order the owner dragged one agent group's rows into: the machine and space the panel
+/// draws as a group, and its pane ids in the order they are shown.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ClientAgentGroupOrder {
+    /// SSH profile of the machine the group belongs to, absent for the local machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) profile_id: Option<String>,
+    pub(super) workspace_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) pane_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(super) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,6 +46,8 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) agent_group_order: Vec<ClientAgentGroupOrder>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

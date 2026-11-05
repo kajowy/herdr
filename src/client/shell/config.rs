@@ -26,6 +26,14 @@ impl ClientShellState {
         );
     }
 
+    /// How the agents panel orders its rows right now.
+    pub(super) fn agent_panel_ordering(&self) -> AgentPanelOrdering<'_> {
+        AgentPanelOrdering {
+            sort: self.config.agent_panel_sort,
+            manual: &self.manual_agent_order,
+        }
+    }
+
     pub(super) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
         let Some(path) = self.config.preferences_path.as_deref() else {
             return;
@@ -64,6 +72,7 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            agent_group_order: self.manual_agent_order.saved(),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

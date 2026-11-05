@@ -439,13 +439,19 @@ impl Workspace {
         self.tabs.get_mut(self.active_tab)
     }
 
-    pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
+    /// Name shown for a tab: the owner's own name when it has one, otherwise a
+    /// name derived from what the tab holds. `tab_idx` is the tab's position,
+    /// which doubles as the last-resort label and as the switch shortcut number.
+    pub fn tab_display_name(
+        &self,
+        tab_idx: usize,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Option<String> {
         let tab = self.tabs.get(tab_idx)?;
-        Some(
-            tab.custom_name
-                .clone()
-                .unwrap_or_else(|| (tab_idx + 1).to_string()),
-        )
+        Some(match &tab.custom_name {
+            Some(name) => name.clone(),
+            None => tab.automatic_display_name(tab_idx + 1, terminals),
+        })
     }
 
     pub fn switch_tab(&mut self, idx: usize) {
@@ -972,6 +978,72 @@ impl Workspace {
         self.unregister_pane(pane_id);
     }
 
+    /// Detach a whole tab without terminating any of its pane runtimes.
+    /// The panes keep their identities and lose only this workspace's public
+    /// numbering, which the receiving workspace assigns again.
+    pub(crate) fn take_tab_for_move(&mut self, tab_idx: usize) -> Option<TakenTab> {
+        if tab_idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(tab_idx);
+        #[cfg(test)]
+        let runtimes = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| {
+                self.test_runtimes
+                    .remove(&pane_id)
+                    .map(|runtime| (pane_id, runtime))
+            })
+            .collect();
+        for pane_id in tab.panes.keys() {
+            self.unregister_pane(*pane_id);
+        }
+        self.adjust_active_tab_after_removal(tab_idx);
+        Some(TakenTab {
+            moved: MovedTab {
+                tab,
+                #[cfg(test)]
+                runtimes,
+            },
+            workspace_empty: self.tabs.is_empty(),
+        })
+    }
+
+    /// Attach a tab detached from another workspace, giving it and its panes
+    /// fresh public numbers here. `insert_index` clamps to the end and `None`
+    /// appends. The tab this workspace was focused on stays focused.
+    /// Returns the index the moved tab now occupies.
+    pub(crate) fn insert_moved_tab(
+        &mut self,
+        moved: MovedTab,
+        insert_index: Option<usize>,
+    ) -> usize {
+        let mut tab = moved.tab;
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        for pane_id in tab.layout.pane_ids() {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+        #[cfg(test)]
+        for (pane_id, runtime) in moved.runtimes {
+            self.test_runtimes.insert(pane_id, runtime);
+        }
+
+        let focused_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+        let insert_idx = insert_index.unwrap_or(self.tabs.len()).min(self.tabs.len());
+        let moved_root_pane = tab.root_pane;
+        self.tabs.insert(insert_idx, tab);
+        self.active_tab = focused_root_pane
+            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
+            .unwrap_or(insert_idx);
+        self.tabs
+            .iter()
+            .position(|tab| tab.root_pane == moved_root_pane)
+            .unwrap_or(insert_idx)
+    }
+
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
         self.public_pane_numbers.get(&pane_id).copied()
     }
@@ -1162,6 +1234,20 @@ impl Workspace {
 pub(crate) struct TakenPane {
     pub moved: MovedPane,
     pub removed_tab_idx: Option<usize>,
+    pub workspace_empty: bool,
+}
+
+/// A tab detached from a workspace with its panes, layout, and runtimes intact.
+pub(crate) struct MovedTab {
+    tab: Tab,
+    #[cfg(test)]
+    runtimes: Vec<(PaneId, TerminalRuntime)>,
+}
+
+/// A detached tab plus what its removal did to the source workspace.
+pub(crate) struct TakenTab {
+    pub moved: MovedTab,
+    /// True when detaching the tab left the source workspace without tabs.
     pub workspace_empty: bool,
 }
 
@@ -1655,8 +1741,11 @@ mod tests {
 
         assert!(ws.move_tab(0, ws.tabs.len()));
 
+        // No terminals are registered, so every auto-named tab falls all the way
+        // back to its position and this keeps asserting the numbering rule.
+        let terminals = HashMap::new();
         let labels: Vec<_> = (0..ws.tabs.len())
-            .map(|tab_idx| ws.tab_display_name(tab_idx).unwrap())
+            .map(|tab_idx| ws.tab_display_name(tab_idx, &terminals).unwrap())
             .collect();
         assert_eq!(labels, vec!["foo", "2", "3"]);
         assert_eq!(ws.tabs[0].custom_name.as_deref(), Some("foo"));
@@ -1674,14 +1763,296 @@ mod tests {
     fn blank_tab_rename_clears_custom_name_back_to_auto_label() {
         let mut ws = Workspace::test_new("test");
         ws.tabs[0].set_custom_name("TA-588 #42".into());
-        assert_eq!(ws.tab_display_name(0).as_deref(), Some("TA-588 #42"));
+        // No terminals are registered, so the automatic label is the position.
+        let terminals = HashMap::new();
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("TA-588 #42")
+        );
 
         ws.tabs[0].set_custom_name("  ".into());
         assert!(ws.tabs[0].is_auto_named());
-        assert_eq!(ws.tab_display_name(0).as_deref(), Some("1"));
+        assert_eq!(ws.tab_display_name(0, &terminals).as_deref(), Some("1"));
 
         ws.tabs[0].set_custom_name("build".into());
         ws.tabs[0].set_custom_name(String::new());
         assert!(ws.tabs[0].is_auto_named());
+    }
+
+    /// Cached terminal state for every pane in `ws`, all reporting `cwd`.
+    fn terminals_at(ws: &Workspace, cwd: &str) -> HashMap<TerminalId, TerminalState> {
+        ws.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .map(|pane| {
+                let terminal_id = pane.attached_terminal_id.clone();
+                (
+                    terminal_id.clone(),
+                    TerminalState::new(terminal_id, PathBuf::from(cwd)),
+                )
+            })
+            .collect()
+    }
+
+    /// Mark `pane_id`'s terminal as running `agent`, with `title` as the title
+    /// that agent has set, if any.
+    fn run_agent(
+        terminals: &mut HashMap<TerminalId, TerminalState>,
+        ws: &Workspace,
+        pane_id: PaneId,
+        agent: crate::detect::Agent,
+        title: Option<&str>,
+    ) {
+        let terminal_id = ws
+            .terminal_id(pane_id)
+            .expect("pane must have a terminal")
+            .clone();
+        let terminal = terminals
+            .get_mut(&terminal_id)
+            .expect("terminal must be registered");
+        terminal.detected_agent = Some(agent);
+        let _ = terminal.set_terminal_title(title.map(str::to_string));
+    }
+
+    #[test]
+    fn a_named_tab_keeps_its_name_over_the_content_it_holds() {
+        let mut ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
+        ws.tabs[0].set_custom_name("TA-588 #42".into());
+
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("TA-588 #42")
+        );
+        assert!(!ws.tabs[0].is_auto_named(), "custom_label must stay true");
+    }
+
+    #[test]
+    fn a_tab_running_one_agent_takes_the_title_that_agent_set() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(Direction::Horizontal);
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
+
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("trading-api")
+        );
+        assert!(ws.tabs[0].is_auto_named(), "custom_label must stay false");
+
+        // The stripped title drops the activity glyph the agent prepends.
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("⠋ Historia projektu"),
+        );
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("Historia projektu")
+        );
+    }
+
+    #[test]
+    fn a_tab_running_one_agent_is_never_named_after_the_harness() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+
+        // Every agent of one harness would otherwise carry the same name.
+        for title in [None, Some("claude"), Some("Claude"), Some("  CLAUDE  ")] {
+            run_agent(
+                &mut terminals,
+                &ws,
+                root,
+                crate::detect::Agent::Claude,
+                title,
+            );
+            assert_eq!(
+                ws.tab_display_name(0, &terminals).as_deref(),
+                Some("pion"),
+                "a title of {title:?} must not name the tab"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tab_whose_agent_set_a_blank_title_takes_its_directory_name() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+
+        for title in [Some(""), Some("   "), Some("⠋   ")] {
+            run_agent(
+                &mut terminals,
+                &ws,
+                root,
+                crate::detect::Agent::Claude,
+                title,
+            );
+            assert_eq!(
+                ws.tab_display_name(0, &terminals).as_deref(),
+                Some("pion"),
+                "a title of {title:?} must not name the tab"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_agent_title_is_truncated_to_the_tab_name_limit() {
+        let ws = Workspace::test_new("test");
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("rename the derived tab label everywhere it is shown"),
+        );
+
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("rename the derived tab label ev…")
+        );
+    }
+
+    #[test]
+    fn a_tab_running_two_agents_takes_its_directory_name() {
+        let mut ws = Workspace::test_new("test");
+        let second = ws.test_split(Direction::Horizontal);
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let root = ws.tabs[0].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            root,
+            crate::detect::Agent::Claude,
+            Some("trading-api"),
+        );
+        run_agent(
+            &mut terminals,
+            &ws,
+            second,
+            crate::detect::Agent::Codex,
+            Some("π - pi"),
+        );
+
+        assert_eq!(ws.tab_display_name(0, &terminals).as_deref(), Some("pion"));
+    }
+
+    #[test]
+    fn a_tab_without_an_agent_takes_its_directory_name() {
+        let ws = Workspace::test_new("test");
+        let terminals = terminals_at(&ws, "/herdr-test/pion");
+
+        assert_eq!(ws.tab_display_name(0, &terminals).as_deref(), Some("pion"));
+    }
+
+    #[test]
+    fn a_tab_without_a_readable_directory_falls_back_to_its_number() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(None);
+        let rootless = terminals_at(&ws, "/");
+
+        assert_eq!(ws.tab_display_name(0, &rootless).as_deref(), Some("1"));
+        assert_eq!(ws.tab_display_name(1, &rootless).as_deref(), Some("2"));
+
+        let unknown = HashMap::new();
+        assert_eq!(ws.tab_display_name(1, &unknown).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn a_derived_tab_name_follows_its_content_when_the_tab_moves() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(Some("foo"));
+        let moved_idx = ws.test_add_tab(None);
+        let mut terminals = terminals_at(&ws, "/herdr-test/pion");
+        let moved_root = ws.tabs[moved_idx].root_pane;
+        run_agent(
+            &mut terminals,
+            &ws,
+            moved_root,
+            crate::detect::Agent::Codex,
+            Some("rebase queue"),
+        );
+        assert_eq!(
+            ws.tab_display_name(moved_idx, &terminals).as_deref(),
+            Some("rebase queue")
+        );
+
+        assert!(ws.move_tab(moved_idx, 0));
+
+        assert_eq!(ws.tabs[0].root_pane, moved_root);
+        assert_eq!(
+            ws.tab_display_name(0, &terminals).as_deref(),
+            Some("rebase queue")
+        );
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn a_derived_tab_name_follows_a_pane_moved_between_spaces() {
+        let mut source = Workspace::test_new("source");
+        let mut target = Workspace::test_new("target");
+        let moved_pane = source.tabs[0].root_pane;
+        let target_root = target.tabs[0].root_pane;
+        let mut terminals = terminals_at(&source, "/herdr-test/pion");
+        terminals.extend(terminals_at(&target, "/"));
+        run_agent(
+            &mut terminals,
+            &source,
+            moved_pane,
+            crate::detect::Agent::Gemini,
+            Some("release notes"),
+        );
+        assert_eq!(
+            source.tab_display_name(0, &terminals).as_deref(),
+            Some("release notes")
+        );
+        assert_eq!(target.tab_display_name(0, &terminals).as_deref(), Some("1"));
+
+        let taken = source
+            .take_pane_for_move(moved_pane)
+            .expect("source pane should be movable");
+        assert!(
+            target
+                .insert_moved_pane_into_tab(
+                    0,
+                    target_root,
+                    taken.moved,
+                    Direction::Horizontal,
+                    0.5,
+                    true,
+                )
+                .is_ok(),
+            "target tab should accept the moved pane"
+        );
+
+        assert_eq!(
+            target.tab_display_name(0, &terminals).as_deref(),
+            Some("release notes"),
+            "the derived name must re-derive itself from the pane that moved"
+        );
+        assert!(
+            target.tabs[0].is_auto_named(),
+            "custom_label must stay false"
+        );
     }
 }

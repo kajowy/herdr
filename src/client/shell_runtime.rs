@@ -70,6 +70,11 @@ pub(super) fn dispatch_client_shell_actions(
                     warn!("could not schedule a reconnect attempt");
                 }
             }
+            shell::ClientShellAction::RenameEndpoint { endpoint_id, label } => {
+                if let Err(error) = rename_saved_machine(&endpoint_id, &label) {
+                    warn!(%error, "could not rename the saved machine");
+                }
+            }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target,
@@ -136,6 +141,23 @@ pub(super) fn dispatch_client_shell_actions(
         }
     }
     Ok((replay_mouse, repaint))
+}
+
+/// Give a saved machine another label, the same catalog operation `herdr machine rename`
+/// performs: load the catalog, rename the profile, store the profiles. Every attached client
+/// picks the new label up from the catalog watcher, so none of this goes through a server.
+fn rename_saved_machine(
+    endpoint_id: &endpoint::ClientEndpointId,
+    label: &str,
+) -> Result<(), String> {
+    let endpoint::ClientEndpointId::Ssh(profile_id) = endpoint_id else {
+        return Err("the local machine has no saved label".into());
+    };
+    let mut catalog = endpoint::EndpointCatalog::load()?;
+    if !catalog.rename_ssh(profile_id, label)? {
+        return Err(format!("machine profile {profile_id} was not found"));
+    }
+    catalog.store_profiles()
 }
 
 pub(super) fn client_shell_resize_message(

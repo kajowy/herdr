@@ -32,6 +32,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.input.set",
     "pane.link.activate",
     "pane.link.resolve",
+    "pane.move",
     "pane.rename",
     "pane.resize",
     "pane.scroll",
@@ -46,6 +47,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.create",
     "tab.focus",
     "tab.move",
+    "tab.relocate",
     "tab.rename",
     "workspace.close",
     "workspace.create",
@@ -301,6 +303,14 @@ mod tests {
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
+        assert_eq!(
+            actual.remove("pane.move").as_deref(),
+            Some("eaed63cf205db2dc043ecce9e1a79cdca7f6e2521b364226bbf3121affadce7c")
+        );
+        assert_eq!(
+            actual.remove("tab.relocate").as_deref(),
+            Some("9586b6fc8bee858752dd4551b51783d5c7ae31659571530e21cfe903e0768b11")
+        );
 
         const FILE_PUT_V1_SHAPE_DIGESTS: &[(&str, &str)] = &[
             (
@@ -390,6 +400,35 @@ mod tests {
             );
         }
         assert!(!supports_client_shell_method_name("file.get.begin"));
+    }
+
+    #[test]
+    fn pane_move_is_advertised_on_the_client_shell_lane() {
+        assert!(supports_client_shell_method(&Method::PaneMove(
+            crate::api::schema::PaneMoveParams {
+                pane_id: "w1:p1".into(),
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some("w2".into()),
+                    label: None,
+                },
+                focus: true,
+            },
+        )));
+        assert!(supported_client_shell_method_names().contains(&"pane.move"));
+    }
+
+    #[test]
+    fn tab_relocate_is_advertised_on_the_client_shell_lane() {
+        assert!(supports_client_shell_method(&Method::TabRelocate(
+            crate::api::schema::TabRelocateParams {
+                tab_id: "w1:t1".into(),
+                workspace_id: "w2".into(),
+                insert_index: None,
+                focus: false,
+                confirm_source_close: false,
+            },
+        )));
+        assert!(supported_client_shell_method_names().contains(&"tab.relocate"));
     }
 
     #[test]

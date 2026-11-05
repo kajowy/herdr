@@ -789,7 +789,7 @@ herdr agent wait w1:p1 --until blocked
 
 | Code | When it occurs |
 | --- | --- |
-| `confirmation_required` | Closing this pane or tab would close a worktree group. |
+| `confirmation_required` | Closing this pane or tab would close a worktree group, or relocating this tab would close the workspace it leaves behind. |
 | `copy_motion_unavailable` | The requested copy mode row is unavailable. |
 | `invalid_agent` | A reported agent label is empty. |
 | `invalid_metadata_request` | The request sets and clears the same metadata field, or sets nothing. |
@@ -828,10 +828,12 @@ herdr agent wait w1:p1 --until blocked
 | `no_active_pane` | The request needs an active pane and there is none. |
 | `no_active_workspace` | The request needs an active workspace and there is none. |
 | `split_not_found` | The split path does not exist in the layout. |
+| `tab_already_in_workspace` | The tab already belongs to the target workspace; reorder it with `tab.move`. |
 | `tab_close_failed` | The tab could not be closed. |
 | `tab_create_failed` | The tab could not be created. |
 | `tab_move_failed` | `insert_index` is out of bounds. |
 | `tab_not_found` | No tab matches the given tab id. |
+| `tab_relocate_failed` | The relocated tab could not be read back after the move. |
 | `workspace_create_failed` | The workspace could not be created. |
 | `workspace_group_close_required` | The workspace has linked worktree workspaces; close the group instead. |
 | `workspace_move_block_failed` | The move block is empty, repeats a workspace, or targets itself. |

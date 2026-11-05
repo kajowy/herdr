@@ -469,6 +469,7 @@ impl App {
             &workspace_label,
             update.ws_idx,
             update.pane_id,
+            &self.state.terminals,
         );
         if let Some(toast) = self.state.toast.as_mut() {
             toast.context = context;
@@ -774,6 +775,7 @@ impl App {
                 &workspace_label,
                 ws_idx,
                 delivery.pane_id,
+                &self.state.terminals,
             );
             if let Some(toast) = delivery.toast.as_mut() {
                 toast.context = context.clone();
@@ -1121,6 +1123,7 @@ impl App {
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
+            Method::TabRelocate(params) => return self.handle_tab_relocate(request.id, params),
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),

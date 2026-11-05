@@ -9,6 +9,38 @@ impl ClientShellState {
                 hit.endpoint_id == self.active_endpoint_id && super::contains(hit.rect, point)
             })
             .map(|hit| hit.workspace_id.clone())
+            .or_else(|| {
+                // In grouped mode the agent tree's space headers are the sidebar's only space
+                // rows, so they have to answer here as well.
+                self.hits
+                    .agent_groups
+                    .iter()
+                    .find(|(rect, endpoint_id, _)| {
+                        *endpoint_id == self.active_endpoint_id && super::contains(*rect, point)
+                    })
+                    .and_then(|(_, _, key)| super::agent_sidebar::agent_group_workspace_id(key))
+                    .map(str::to_owned)
+            })
+    }
+
+    /// Agent row under `point` on the machine on display, with the tab its pane belongs to.
+    /// The panel draws other machines' agents too, but only the active machine takes requests,
+    /// so only its rows carry a menu.
+    pub(super) fn active_endpoint_agent_at(&self, point: (u16, u16)) -> Option<(String, String)> {
+        self.hits
+            .endpoint_agents
+            .iter()
+            .find(|(rect, endpoint_id, _, _)| {
+                *endpoint_id == self.active_endpoint_id && super::contains(*rect, point)
+            })
+            .map(|(_, _, pane_id, tab_id)| (pane_id.clone(), tab_id.clone()))
+            .or_else(|| {
+                self.hits
+                    .agents
+                    .iter()
+                    .find(|(rect, _, _)| super::contains(*rect, point))
+                    .map(|(_, pane_id, tab_id)| (pane_id.clone(), tab_id.clone()))
+            })
     }
 
     pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
@@ -151,8 +183,8 @@ impl ClientShellState {
             .hits
             .endpoint_agents
             .iter()
-            .find(|(rect, _, _)| super::contains(*rect, point))
-            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
+            .find(|(rect, _, _, _)| super::contains(*rect, point))
+            .map(|(_, endpoint_id, pane_id, _)| (endpoint_id.clone(), pane_id.clone()))
         else {
             return false;
         };
@@ -234,7 +266,7 @@ impl ClientShellState {
             let agents = super::aggregate_navigation::online_agent_targets(
                 &self.endpoints,
                 &self.active_endpoint_id,
-                self.config.agent_panel_sort,
+                self.agent_panel_ordering(),
             );
             if agents.is_empty() {
                 return true;
