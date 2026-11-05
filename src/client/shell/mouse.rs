@@ -2141,6 +2141,24 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if !self.sidebar_collapsed {
+                    let endpoint_id = self
+                        .hits
+                        .machines
+                        .iter()
+                        .find(|hit| super::contains(hit.rect, point))
+                        .map(|hit| hit.endpoint_id.clone());
+                    if let Some(endpoint_id) = endpoint_id {
+                        outcome.repaint |=
+                            self.open_machine_context_menu(endpoint_id, mouse.column, mouse.row);
+                        return;
+                    }
+                    if let Some((pane_id, tab_id)) = self.active_endpoint_agent_at(point) {
+                        self.open_agent_context_menu(pane_id, tab_id, mouse.column, mouse.row);
+                        outcome.repaint = true;
+                        return;
+                    }
+                }
                 let tab_id = self
                     .hits
                     .tabs

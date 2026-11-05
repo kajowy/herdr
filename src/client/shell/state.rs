@@ -408,6 +408,13 @@ pub(crate) enum ClientShellAction {
     ReconnectEndpoint {
         endpoint_id: ClientEndpointId,
     },
+    /// Give a saved machine another label in the endpoint catalog, the operation
+    /// `herdr machine rename` performs. The catalog is client-owned state, so this never
+    /// reaches a server.
+    RenameEndpoint {
+        endpoint_id: ClientEndpointId,
+        label: String,
+    },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
     ChooseFiles,
@@ -483,6 +490,10 @@ pub(super) enum ClientRenameTarget {
     },
     Pane {
         pane_id: String,
+    },
+    /// Saved machine in the endpoint catalog, which is where its label lives.
+    Machine {
+        endpoint_id: ClientEndpointId,
     },
 }
 
@@ -686,6 +697,9 @@ pub(super) enum ClientContextMenuAction {
     RemoveWorktree,
     ToggleGroup,
     NewTab,
+    RenameTab,
+    CloseTab,
+    Reconnect,
     RenamePane,
     ClearPaneName,
     SwapWithFocusedPane,
@@ -716,6 +730,15 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+    },
+    /// Agent row in the agents panel. It names the agent's tab too, because the name the row
+    /// shows is the tab's, and that is the name a pane carries to another space.
+    Agent { pane_id: String, tab_id: String },
+    /// Saved machine row in the machines band. `parked` marks the statuses that leave the
+    /// endpoint waiting on an attempt, which are the only ones with a reconnect to offer.
+    Machine {
+        endpoint_id: ClientEndpointId,
+        parked: bool,
     },
 }
 

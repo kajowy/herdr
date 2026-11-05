@@ -402,13 +402,22 @@ impl ClientShellState {
     }
 
     pub(super) fn open_rename_tab_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(tab_id) = snapshot.focused_tab_id.as_deref() else {
-            return;
-        };
-        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id) else {
+        let tab_id = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_tab_id.clone());
+        if let Some(tab_id) = tab_id {
+            self.open_rename_tab_overlay_for(&tab_id);
+        }
+    }
+
+    /// Rename overlay for a named tab, which every tab rename goes through.
+    pub(super) fn open_rename_tab_overlay_for(&mut self, tab_id: &str) {
+        let Some(tab) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
+        else {
             return;
         };
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
@@ -423,13 +432,22 @@ impl ClientShellState {
     }
 
     pub(super) fn open_rename_pane_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(pane_id) = snapshot.focused_pane_id.as_deref() else {
-            return;
-        };
-        let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {
+        let pane_id = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_pane_id.clone());
+        if let Some(pane_id) = pane_id {
+            self.open_rename_pane_overlay_for(&pane_id);
+        }
+    }
+
+    /// Rename overlay for a named pane, which every pane rename goes through.
+    pub(super) fn open_rename_pane_overlay_for(&mut self, pane_id: &str) {
+        let Some(pane) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.panes.iter().find(|pane| pane.pane_id == pane_id))
+        else {
             return;
         };
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
@@ -1027,6 +1045,17 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
+            ClientRenameTarget::Machine { endpoint_id } => {
+                // A saved machine's label lives in the client's endpoint catalog, not on any
+                // server, so this rename leaves through the catalog instead of a method.
+                if !trimmed.is_empty() {
+                    outcome.actions.push(ClientShellAction::RenameEndpoint {
+                        endpoint_id,
+                        label: trimmed.to_owned(),
+                    });
+                }
+                None
+            }
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);

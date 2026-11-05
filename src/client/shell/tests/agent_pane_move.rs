@@ -1285,3 +1285,316 @@ fn the_grouped_insertion_line_marks_the_edge_the_row_lands_against() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// Right-click a cell in the owner's sidebar.
+fn right_click(state: &mut ClientShellState, point: (u16, u16)) -> ClientShellInput {
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        point.0,
+        point.1,
+    )])
+}
+
+/// Labels the open context menu offers, in the order it draws them.
+fn menu_labels(state: &ClientShellState) -> Vec<&'static str> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            menu.items().iter().map(|item| item.label).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Click the menu row carrying `label`, the way the pointer reaches it on screen.
+fn choose_menu_item(state: &mut ClientShellState, label: &str) -> ClientShellInput {
+    let index = menu_labels(state)
+        .iter()
+        .position(|item| *item == label)
+        .unwrap_or_else(|| panic!("{label} item in {:?}", menu_labels(state)));
+    state.compose(106, 40).expect("context menu frame");
+    let row = state.hits.context_menu_rows[index].0;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )])
+}
+
+/// A cell of the agents panel no row occupies, so a right-click there has no target.
+fn empty_panel_cell(state: &ClientShellState) -> (u16, u16) {
+    let body = state.hits.agent_body;
+    let occupied = state
+        .hits
+        .endpoint_agents
+        .iter()
+        .map(|(rect, _, _, _)| rect.bottom())
+        .chain(
+            state
+                .hits
+                .agent_groups
+                .iter()
+                .map(|(rect, _, _)| rect.bottom()),
+        )
+        .max()
+        .expect("grouped rows");
+    assert!(occupied < body.bottom(), "the panel has a free row");
+    (body.x + 1, occupied)
+}
+
+/// The machines band row of a machine, which is where its menu has to open.
+fn machine_row(state: &ClientShellState, endpoint_id: &ClientEndpointId) -> Rect {
+    state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == endpoint_id)
+        .expect("machine row")
+        .rect
+}
+
+#[test]
+fn right_clicking_a_grouped_agent_row_offers_its_tab_and_its_pane() {
+    let (mut state, _) = grouped_flat_state();
+    let row = grouped_agent_row(&state, "pane_1");
+
+    let outcome = right_click(&mut state, (row.x + 2, row.y));
+    assert!(outcome.repaint);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+    assert_eq!(
+        menu_labels(&state),
+        ["Rename tab", "Rename pane", "Close tab"]
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Agent {
+                ref pane_id,
+                ref tab_id,
+            },
+            ..
+        })) if pane_id == "pane_1" && tab_id == "tab_1"
+    ));
+}
+
+#[test]
+fn renaming_a_tab_from_an_agent_row_sends_the_tab_rename() {
+    let (mut state, _) = grouped_flat_state();
+    let row = grouped_agent_row(&state, "pane_1");
+    right_click(&mut state, (row.x + 2, row.y));
+
+    choose_menu_item(&mut state, "Rename tab");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::Tab { ref tab_id, .. },
+            ..
+        })) if tab_id == "tab_1"
+    ));
+
+    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
+        "auto-impl TA-312",
+    ))]);
+    let accept = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))]);
+    let [ClientShellAction::Endpoint { request, .. }] = &accept.actions[..] else {
+        panic!("tab rename request, got {:?}", accept.actions);
+    };
+    assert!(matches!(
+        &request.method,
+        Method::TabRename(params)
+            if params.tab_id == "tab_1" && params.label == "1auto-impl TA-312"
+    ));
+}
+
+#[test]
+fn renaming_a_pane_from_an_agent_row_targets_that_pane() {
+    let (mut state, _) = grouped_flat_state();
+    let row = grouped_agent_row(&state, "pane_1b");
+    right_click(&mut state, (row.x + 2, row.y));
+
+    choose_menu_item(&mut state, "Rename pane");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::Pane { ref pane_id },
+            ..
+        })) if pane_id == "pane_1b"
+    ));
+}
+
+#[test]
+fn closing_a_tab_from_an_agent_row_closes_the_tab_the_row_names() {
+    let (mut state, _) = grouped_flat_state();
+    let row = grouped_agent_row(&state, "pane_2");
+    right_click(&mut state, (row.x + 2, row.y));
+
+    let outcome = choose_menu_item(&mut state, "Close tab");
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("tab close request, got {:?}", outcome.actions);
+    };
+    assert!(matches!(
+        &request.method,
+        Method::TabClose(target) if target.tab_id == "tab_2"
+    ));
+}
+
+#[test]
+fn right_clicking_a_saved_machine_row_renames_it_through_the_catalog() {
+    let (mut state, endpoint_id) = grouped_flat_state();
+    let row = machine_row(&state, &endpoint_id);
+
+    right_click(&mut state, (row.x + 3, row.y));
+    assert_eq!(menu_labels(&state), ["Rename"]);
+
+    choose_menu_item(&mut state, "Rename");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::Machine { endpoint_id: ref renamed },
+            ..
+        })) if renamed == &endpoint_id
+    ));
+
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('X'),
+        KeyModifiers::NONE,
+    ))]);
+    let accept = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))]);
+    assert!(
+        matches!(
+            accept.actions.as_slice(),
+            [ClientShellAction::RenameEndpoint { endpoint_id: renamed, label }]
+                if renamed == &endpoint_id && label.ends_with('X')
+        ),
+        "{:?}",
+        accept.actions
+    );
+}
+
+#[test]
+fn the_local_machine_row_has_no_saved_label_to_rename() {
+    let (mut state, _) = grouped_flat_state();
+    let row = machine_row(&state, &ClientEndpointId::Local);
+
+    right_click(&mut state, (row.x + 3, row.y));
+    assert!(state.overlay.is_none(), "{:?}", menu_labels(&state));
+}
+
+#[test]
+fn only_a_parked_machine_row_offers_a_reconnect() {
+    let (mut state, endpoint_id) = grouped_flat_state();
+    let row = machine_row(&state, &endpoint_id);
+    right_click(&mut state, (row.x + 3, row.y));
+    assert_eq!(menu_labels(&state), ["Rename"]);
+    state.overlay = None;
+
+    for status in [
+        ClientEndpointStatus::Attention,
+        ClientEndpointStatus::Reconnecting,
+    ] {
+        state.set_endpoint_status(&endpoint_id, status, None);
+        state.compose(106, 40).expect("parked machine band");
+        let row = machine_row(&state, &endpoint_id);
+        right_click(&mut state, (row.x + 3, row.y));
+        assert_eq!(
+            menu_labels(&state),
+            ["Rename", "Reconnect now"],
+            "{status:?}"
+        );
+
+        let outcome = choose_menu_item(&mut state, "Reconnect now");
+        assert!(
+            matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ReconnectEndpoint { endpoint_id: requested }]
+                    if requested == &endpoint_id
+            ),
+            "{status:?}: {:?}",
+            outcome.actions
+        );
+    }
+}
+
+#[test]
+fn right_clicking_a_space_row_opens_the_workspace_menu_in_both_layouts() {
+    let (mut state, _) = grouped_flat_state();
+    for target in [
+        workspace_row(&state, "ws_2"),
+        grouped_space_header(&state, &ClientEndpointId::Local, "ws_2"),
+    ] {
+        right_click(&mut state, (target.x + 3, target.y));
+        assert!(
+            matches!(
+                state.overlay,
+                Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+                    target: ClientContextMenuTarget::Workspace { ref workspace_id, .. },
+                    ..
+                })) if workspace_id == "ws_2"
+            ),
+            "{target:?}: {:?}",
+            menu_labels(&state)
+        );
+        state.overlay = None;
+    }
+}
+
+#[test]
+fn right_clicking_empty_panel_space_opens_nothing() {
+    let (mut state, _) = grouped_flat_state();
+    let point = empty_panel_cell(&state);
+
+    let outcome = right_click(&mut state, point);
+    assert!(state.overlay.is_none(), "{:?}", menu_labels(&state));
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+}
+
+#[test]
+fn left_clicking_a_grouped_agent_row_still_focuses_it_and_arms_a_drag() {
+    let (mut state, _) = grouped_flat_state();
+    let row = grouped_agent_row(&state, "pane_1b");
+
+    let press = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )]);
+    assert!(
+        matches!(
+            press.actions.as_slice(),
+            [ClientShellAction::ActivateEndpoint { endpoint_id, target: Some(ClientEndpointFocusTarget::Pane(pane_id)) }]
+                if endpoint_id.is_local() && pane_id == "pane_1b"
+        ),
+        "{:?}",
+        press.actions
+    );
+    assert!(state.agent_press.is_some(), "the drag stays armed");
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn left_clicking_a_grouped_space_header_still_folds_it() {
+    let (mut state, _) = grouped_flat_state();
+    let header = grouped_space_header(&state, &ClientEndpointId::Local, "ws_2");
+
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        header.x + 3,
+        header.y,
+    )]);
+    state
+        .compose(106, 40)
+        .expect("grouped sidebar after the fold");
+    assert!(state.overlay.is_none());
+    assert!(
+        grouped_panel_pane_ids(&state)
+            .iter()
+            .all(|pane_id| pane_id != "pane_3"),
+        "{:?}",
+        grouped_panel_pane_ids(&state)
+    );
+}

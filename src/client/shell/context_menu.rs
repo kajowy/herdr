@@ -79,6 +79,20 @@ impl ClientContextMenuOverlay {
                 ]);
                 items
             }
+            // The agent row's own name is its tab's, so renaming the tab is the first thing
+            // the row offers.
+            ClientContextMenuTarget::Agent { .. } => vec![
+                item("Rename tab", Action::RenameTab),
+                item("Rename pane", Action::RenamePane),
+                item("Close tab", Action::CloseTab),
+            ],
+            ClientContextMenuTarget::Machine { parked, .. } => {
+                let mut items = vec![item("Rename", Action::Rename)];
+                if *parked {
+                    items.push(item("Reconnect now", Action::Reconnect));
+                }
+                items
+            }
         }
     }
 }
@@ -167,6 +181,48 @@ impl ClientShellState {
         }));
     }
 
+    pub(super) fn open_agent_context_menu(
+        &mut self,
+        pane_id: String,
+        tab_id: String,
+        x: u16,
+        y: u16,
+    ) {
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Agent { pane_id, tab_id },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    /// Open a saved machine's menu, reporting whether the row had one. The local machine has no
+    /// catalog entry to rename and no supervisor to ask for an attempt, so it has no menu.
+    pub(super) fn open_machine_context_menu(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        x: u16,
+        y: u16,
+    ) -> bool {
+        if endpoint_id.is_local() {
+            return false;
+        }
+        let parked = matches!(
+            self.endpoint_status(&endpoint_id),
+            Some(ClientEndpointStatus::Attention | ClientEndpointStatus::Reconnecting)
+        );
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Machine {
+                endpoint_id,
+                parked,
+            },
+            x,
+            y,
+            highlighted: 0,
+        }));
+        true
+    }
+
     pub(super) fn move_context_menu_selection(&mut self, delta: isize) {
         let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.as_mut() else {
             return;
@@ -215,8 +271,51 @@ impl ClientShellState {
                 action,
                 outcome,
             ),
+            ClientContextMenuTarget::Agent { pane_id, tab_id } => {
+                self.activate_agent_context_action(pane_id, tab_id, action, outcome)
+            }
+            ClientContextMenuTarget::Machine { endpoint_id, .. } => {
+                self.activate_machine_context_action(endpoint_id, action, outcome)
+            }
         }
         outcome.repaint = true;
+    }
+
+    fn activate_agent_context_action(
+        &mut self,
+        pane_id: String,
+        tab_id: String,
+        action: ClientContextMenuAction,
+        outcome: &mut ClientShellInput,
+    ) {
+        match action {
+            ClientContextMenuAction::RenameTab => self.open_rename_tab_overlay_for(&tab_id),
+            ClientContextMenuAction::RenamePane => self.open_rename_pane_overlay_for(&pane_id),
+            ClientContextMenuAction::CloseTab => self.request_tab_close(tab_id, outcome),
+            _ => {}
+        }
+    }
+
+    fn activate_machine_context_action(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        action: ClientContextMenuAction,
+        outcome: &mut ClientShellInput,
+    ) {
+        match action {
+            ClientContextMenuAction::Rename => {
+                let label = self.endpoint_label(&endpoint_id).to_owned();
+                self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                    title: "rename machine",
+                    input: TextEditor::new(&label, false),
+                    target: ClientRenameTarget::Machine { endpoint_id },
+                }));
+            }
+            ClientContextMenuAction::Reconnect => outcome
+                .actions
+                .push(ClientShellAction::ReconnectEndpoint { endpoint_id }),
+            _ => {}
+        }
     }
 
     fn activate_workspace_context_action(
@@ -331,23 +430,7 @@ impl ClientShellState {
                     );
                 }
             }
-            ClientContextMenuAction::Rename => {
-                let tab = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id));
-                if let Some(tab) = tab {
-                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                        title: "rename tab",
-                        input: TextEditor::new(&tab.label, false),
-                        target: ClientRenameTarget::Tab {
-                            tab_id,
-                            auto_name: !tab.custom_label,
-                            original_name: tab.label.clone(),
-                        },
-                    }));
-                }
-            }
+            ClientContextMenuAction::Rename => self.open_rename_tab_overlay_for(&tab_id),
             ClientContextMenuAction::Close => {
                 self.request_tab_close(tab_id, outcome);
             }
@@ -370,20 +453,7 @@ impl ClientShellState {
         };
 
         match action {
-            ClientContextMenuAction::RenamePane => {
-                let label = self.snapshot.as_deref().and_then(|snapshot| {
-                    snapshot
-                        .panes
-                        .iter()
-                        .find(|pane| pane.pane_id == pane_id)
-                        .and_then(|pane| pane.label.clone())
-                });
-                self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                    title: "rename pane",
-                    input: TextEditor::new(label.as_deref().unwrap_or_default(), label.is_none()),
-                    target: ClientRenameTarget::Pane { pane_id },
-                }));
-            }
+            ClientContextMenuAction::RenamePane => self.open_rename_pane_overlay_for(&pane_id),
             ClientContextMenuAction::ClearPaneName => self.push_endpoint_method(
                 Method::PaneRename(PaneRenameParams {
                     pane_id,
